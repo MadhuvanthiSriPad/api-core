@@ -1,0 +1,246 @@
+openapi: "3.1.0"
+info:
+  title: API Core
+  description: Core API for AgentBoard — tracks AI sessions, token usage, and costs
+  version: "2.0.0"
+
+servers:
+  - url: http://localhost:8001
+    description: Local development
+
+paths:
+  /api/v1/sessions:
+    post:
+      operationId: createSession
+      summary: Start a new agent session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SessionCreate"
+      responses:
+        "201":
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionResponse"
+    get:
+      operationId: listSessions
+      summary: List agent sessions with optional filters
+      parameters:
+        - name: team_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: List of sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SessionResponse"
+
+  /api/v1/sessions/stats:
+    get:
+      operationId: getSessionStats
+      summary: Get aggregate session statistics
+      parameters:
+        - name: team_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Aggregate stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionStats"
+
+  /api/v1/sessions/{session_id}:
+    get:
+      operationId: getSession
+      summary: Get a single session by ID
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Session detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionResponse"
+    patch:
+      operationId: updateSession
+      summary: Update a session
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SessionUpdate"
+      responses:
+        "200":
+          description: Updated session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionResponse"
+
+components:
+  schemas:
+    SessionCreate:
+      type: object
+      required:
+        - team_id
+        - agent_name
+        - priority
+      properties:
+        team_id:
+          type: string
+        agent_name:
+          type: string
+        model:
+          type: string
+          default: "gpt-4o"
+        priority:
+          type: string
+          enum:
+            - low
+            - medium
+            - high
+            - critical
+        prompt:
+          type: string
+          nullable: true
+        tags:
+          type: string
+          nullable: true
+
+    SessionResponse:
+      type: object
+      properties:
+        session_id:
+          type: string
+        team_id:
+          type: string
+        agent_name:
+          type: string
+        model:
+          type: string
+        status:
+          type: string
+        priority:
+          type: string
+          nullable: true
+        usage:
+          type: object
+          properties:
+            input_tokens:
+              type: integer
+            output_tokens:
+              type: integer
+            cached_tokens:
+              type: integer
+        billing:
+          type: object
+          properties:
+            total:
+              type: number
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: string
+          format: date-time
+          nullable: true
+        duration_seconds:
+          type: number
+        error_message:
+          type: string
+          nullable: true
+        tags:
+          type: string
+          nullable: true
+
+    SessionUpdate:
+      type: object
+      properties:
+        status:
+          type: string
+          nullable: true
+        input_tokens:
+          type: integer
+          nullable: true
+        output_tokens:
+          type: integer
+          nullable: true
+        cached_tokens:
+          type: integer
+          nullable: true
+        total_cost:
+          type: number
+          nullable: true
+        ended_at:
+          type: string
+          format: date-time
+          nullable: true
+        duration_seconds:
+          type: number
+          nullable: true
+        error_message:
+          type: string
+          nullable: true
+
+    SessionStats:
+      type: object
+      properties:
+        total_sessions:
+          type: integer
+        active_sessions:
+          type: integer
+        completed_sessions:
+          type: integer
+        failed_sessions:
+          type: integer
+        total_tokens:
+          type: integer
+        total_cost:
+          type: number
+        avg_duration_seconds:
+          type: number
+        success_rate:
+          type: number

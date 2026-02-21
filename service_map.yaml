@@ -1,0 +1,19 @@
+services:
+  billing-service:
+    repo: "https://github.com/MadhuvanthiSriPad/billing-service"
+    language: python
+    client_paths:
+      - "src/clients/gateway.py"
+      - "src/routes/invoices.py"
+    test_paths:
+      - "tests/"
+
+  dashboard-service:
+    repo: "https://github.com/MadhuvanthiSriPad/dashboard-service"
+    language: python
+    client_paths:
+      - "src/main.py"
+    test_paths:
+      - "tests/"
+    frontend_paths:
+      - "frontend/src/"

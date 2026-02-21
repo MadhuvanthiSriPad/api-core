@@ -1,0 +1,181 @@
+"""Build RepoFixBundle for each impacted repo — the context Devin receives."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass, field
+
+from propagate.classifier import ClassifiedChange
+from propagate.impact import ImpactRecord
+from propagate.service_map import ServiceInfo
+
+
+@dataclass
+class RepoFixBundle:
+    target_repo: str
+    target_service: str
+    change_summary: str
+    breaking_changes: list[dict]
+    affected_routes: list[str]
+    call_count_7d: int
+    client_paths: list[str]
+    test_paths: list[str]
+    frontend_paths: list[str]
+    prompt: str
+    bundle_hash: str = ""
+
+    def __post_init__(self):
+        if not self.bundle_hash:
+            content = json.dumps({
+                "repo": self.target_repo,
+                "summary": self.change_summary,
+                "routes": self.affected_routes,
+            }, sort_keys=True)
+            self.bundle_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
+
+
+def _build_devin_prompt(
+    service_name: str,
+    change: ClassifiedChange,
+    affected_routes: list[str],
+    service_info: ServiceInfo,
+) -> str:
+    """Build a detailed prompt for Devin to fix the consumer repo."""
+    changed_fields_desc = []
+    for cf in change.changed_fields:
+        desc = f"  - {cf['field']}: {cf['diff_type']}"
+        if cf.get("old_value"):
+            desc += f" (was: {cf['old_value']})"
+        if cf.get("new_value"):
+            desc += f" (now: {cf['new_value']})"
+        changed_fields_desc.append(desc)
+
+    client_files = "\n".join(f"  - {p}" for p in service_info.client_paths) or "  (search for HTTP client code)"
+    test_files = "\n".join(f"  - {p}" for p in service_info.test_paths) or "  (search for test files)"
+
+    prompt = f"""# URGENT: Breaking API Contract Change - Parallel Remediation Session
+
+⚠️ **CONTEXT**: A breaking change was just deployed to api-core. This is affecting MULTIPLE downstream services simultaneously. You are one of several Devin agents working IN PARALLEL to fix different repos. Your mission: fix {service_name} while other Devin instances handle other services.
+
+## What Changed Upstream
+**Breaking Change**: {change.summary}
+**Severity**: {change.severity.upper()}
+**Affected Endpoints**: {chr(10).join(f'  • {r}' for r in affected_routes)}
+**Your Service's Impact**: {service_info.repo.split('/')[-1]} made {chr(10).join(f'{r}' for r in affected_routes)} calls in the last 7 days — ALL will break without this fix.
+
+## Technical Details of the Breaking Change
+{chr(10).join(changed_fields_desc)}
+
+## Your Mission: Autonomous Multi-Hour Remediation
+You need to autonomously fix this breaking change across the entire {service_name} codebase. This is NOT a simple find-replace — this requires deep reasoning:
+
+1. **Understand the full context** by reading the HTTP client code, business logic, and test files
+2. **Update all affected callsites** to send the new required fields
+3. **Handle edge cases** (e.g., default values for the new required field, validation logic)
+4. **Fix cascading issues** (e.g., if frontend TypeScript types break, update those too)
+5. **Ensure backward compatibility** where possible
+6. **Verify the fix** by running the full test suite and debugging any failures
+7. **Create a production-ready PR** with a clear explanation for code reviewers
+
+## Key Files to Investigate
+**Client Code** (where HTTP calls are made):
+{client_files}
+
+**Tests** (will likely fail and need updates):
+{test_files}
+
+## Success Criteria
+✓ All HTTP client code updated to send the new required field(s)
+✓ All tests pass (you may need to update test mocks and fixtures)
+✓ No type errors (if using TypeScript)
+✓ PR description clearly explains what changed and why
+✓ PR title: "fix: Adapt to breaking API change - {change.summary}"
+
+## Important Constraints
+⚠️ Do NOT modify: infra/, .github/workflows/, terraform/, k8s/
+⚠️ Do NOT auto-merge the PR
+⚠️ If tests fail after your initial fix, **debug and iterate** until they pass
+⚠️ If you encounter ambiguity about the correct value for new required fields, use sensible defaults and document the assumption in the PR
+
+## Why This Task Requires Long-Running Autonomous Execution
+This is NOT a task for co-pilot tools like GitHub Copilot or Cursor:
+- **Duration**: This will take 30-90 minutes of continuous work
+- **Iteration required**: You'll hit test failures, debug them, fix root causes, and re-run tests multiple times
+- **No human in the loop**: You can't pause and ask a developer "what should the default value be?" — you need to make intelligent decisions
+- **Production stakes**: Partial fixes are worse than no fix — the PR must be production-ready
+
+## Why This Matters (Business Impact)
+This repo is called by production services {chr(10).join(f'({r})' for r in affected_routes)} multiple times per day. If this breaking change isn't fixed before deployment, it will cause:
+- **Immediate production outage**: HTTP 400/422 errors from the upstream API
+- **Revenue impact**: Failed transactions in billing workflows
+- **Customer-facing failures**: Degraded user experience
+- **Manual remediation cost**: 2-4 engineer-hours per service if done manually
+
+Your goal is to create a production-ready fix that can be reviewed and merged within hours, preventing incidents and saving engineering time.
+
+---
+
+## 🤖 Parallel Execution Context
+You are **Session #{service_name}** in a coordinated multi-repo remediation operation. Other Devin agents are simultaneously fixing other affected services. This is the power of autonomous agents at scale — what would take a team of engineers **days of coordinated work** across repos is being handled in **parallel autonomous sessions** that complete in hours.
+
+**Your specific scope**: Fix {service_name} only. Do not worry about other services — they have their own Devin agents working on them.
+
+---
+
+**Start by cloning the repo, creating a branch `fix/contract-update-auto`, and thoroughly investigating the impact.**
+"""
+
+    if service_info.frontend_paths:
+        frontend_files = "\n".join(f"  - {p}" for p in service_info.frontend_paths)
+        prompt += f"""
+## Frontend Files (also need updating)
+{frontend_files}
+- Update any UI components that render data from the changed API endpoints
+- Update TypeScript/JS types if applicable
+"""
+
+    return prompt
+
+
+def build_fix_bundles(
+    change: ClassifiedChange,
+    impacts: list[ImpactRecord],
+    service_map: dict[str, "ServiceInfo"],
+) -> list[RepoFixBundle]:
+    """Build a RepoFixBundle for each uniquely impacted repo."""
+    # Group impacts by service
+    service_impacts: dict[str, list[ImpactRecord]] = {}
+    for impact in impacts:
+        svc = impact.caller_service
+        if svc not in service_impacts:
+            service_impacts[svc] = []
+        service_impacts[svc].append(impact)
+
+    bundles: list[RepoFixBundle] = []
+
+    for svc_name, svc_impacts in service_impacts.items():
+        svc_info = service_map.get(svc_name)
+        if not svc_info:
+            print(f"  WARNING: No service_map entry for '{svc_name}', skipping")
+            continue
+
+        affected_routes = sorted(set(f"{imp.route_template}" for imp in svc_impacts))
+        total_calls = sum(imp.calls_last_7d for imp in svc_impacts)
+
+        prompt = _build_devin_prompt(svc_name, change, affected_routes, svc_info)
+
+        bundles.append(RepoFixBundle(
+            target_repo=svc_info.repo,
+            target_service=svc_name,
+            change_summary=change.summary,
+            breaking_changes=change.changed_fields,
+            affected_routes=affected_routes,
+            call_count_7d=total_calls,
+            client_paths=svc_info.client_paths,
+            test_paths=svc_info.test_paths,
+            frontend_paths=svc_info.frontend_paths,
+            prompt=prompt,
+        ))
+
+    return bundles

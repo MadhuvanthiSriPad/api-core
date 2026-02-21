@@ -1,0 +1,42 @@
+name: Contract Propagation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "openapi.yaml"
+
+jobs:
+  propagate:
+    runs-on: ubuntu-latest
+    env:
+      DEVIN_API_KEY: ${{ secrets.DEVIN_API_KEY }}
+      GATEWAY_DATABASE_URL: sqlite+aiosqlite:///./data/gateway.db
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Prepare data directory
+        run: mkdir -p data
+
+      - name: Detect and propagate contract changes
+        run: python -m propagate 2>&1 | tee data/propagate.log
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: propagation-logs
+          path: |
+            data/propagate.log
+            data/gateway.db
+          retention-days: 7
