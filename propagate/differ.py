@@ -101,13 +101,26 @@ def _diff_nested(
                     new_value=new_t,
                     diff_type="nested_field_type_changed",
                 ))
+            # Recurse into nested objects/arrays
+            old_sub_resolved = _resolve_schema(old_spec, old_sub[sub_name])
+            new_sub_resolved = _resolve_schema(new_spec, new_sub[sub_name])
+            if (old_sub_resolved.get("type") in ("object", "array")
+                    or new_sub_resolved.get("type") in ("object", "array")):
+                _diff_nested(
+                    old_spec, new_spec,
+                    old_sub[sub_name], new_sub[sub_name],
+                    path, method, f"{field_prefix}.{sub_name}",
+                    diffs,
+                )
 
     # Array items: compare item schema
     if old_resolved.get("type") == "array" and new_resolved.get("type") == "array":
         old_items = old_resolved.get("items", {})
         new_items = new_resolved.get("items", {})
-        old_item_type = _resolve_schema(old_spec, old_items).get("type")
-        new_item_type = _resolve_schema(new_spec, new_items).get("type")
+        old_item_resolved = _resolve_schema(old_spec, old_items)
+        new_item_resolved = _resolve_schema(new_spec, new_items)
+        old_item_type = old_item_resolved.get("type")
+        new_item_type = new_item_resolved.get("type")
         if old_item_type and new_item_type and old_item_type != new_item_type:
             diffs.append(ContractDiff(
                 path=path, method=method,
@@ -116,6 +129,14 @@ def _diff_nested(
                 new_value=new_item_type,
                 diff_type="array_item_type_changed",
             ))
+        # Recurse into array item schemas if they are objects/arrays
+        if old_item_type in ("object", "array") or new_item_type in ("object", "array"):
+            _diff_nested(
+                old_spec, new_spec,
+                old_items, new_items,
+                path, method, f"{field_prefix}.items",
+                diffs,
+            )
 
 
 def diff_contracts(old_spec: dict, new_spec: dict) -> list[ContractDiff]:
@@ -156,9 +177,70 @@ def diff_contracts(old_spec: dict, new_spec: dict) -> list[ContractDiff]:
                 ))
                 continue
 
-            # Compare request body schemas
+            # Compare parameters (query, path, header)
+            old_params = {(p.get("name"), p.get("in")): p for p in old_op.get("parameters", [])}
+            new_params = {(p.get("name"), p.get("in")): p for p in new_op.get("parameters", [])}
+
+            for key in set(new_params.keys()) - set(old_params.keys()):
+                param = new_params[key]
+                if param.get("required", False):
+                    diffs.append(ContractDiff(
+                        path=path, method=method,
+                        field=f"parameter.{key[1]}.{key[0]}",
+                        old_value=None, new_value=param,
+                        diff_type="parameter_added_required",
+                    ))
+
+            for key in set(old_params.keys()) - set(new_params.keys()):
+                diffs.append(ContractDiff(
+                    path=path, method=method,
+                    field=f"parameter.{key[1]}.{key[0]}",
+                    old_value=old_params[key], new_value=None,
+                    diff_type="parameter_removed",
+                ))
+
+            for key in set(old_params.keys()) & set(new_params.keys()):
+                old_p = old_params[key]
+                new_p = new_params[key]
+                old_p_schema = old_p.get("schema", {})
+                new_p_schema = new_p.get("schema", {})
+                if old_p_schema.get("type") != new_p_schema.get("type"):
+                    diffs.append(ContractDiff(
+                        path=path, method=method,
+                        field=f"parameter.{key[1]}.{key[0]}",
+                        old_value=old_p_schema.get("type"),
+                        new_value=new_p_schema.get("type"),
+                        diff_type="parameter_type_changed",
+                    ))
+
+            # Compare request body content types
             old_req_body = old_op.get("requestBody", {})
             new_req_body = new_op.get("requestBody", {})
+            old_content_types = set(old_req_body.get("content", {}).keys())
+            new_content_types = set(new_req_body.get("content", {}).keys())
+            if old_content_types and new_content_types and old_content_types != new_content_types:
+                diffs.append(ContractDiff(
+                    path=path, method=method,
+                    field="request.content_type",
+                    old_value=sorted(old_content_types),
+                    new_value=sorted(new_content_types),
+                    diff_type="content_type_changed",
+                ))
+
+            # Compare security schemes
+            old_security = old_op.get("security", [])
+            new_security = new_op.get("security", [])
+            if old_security != new_security:
+                old_schemes = sorted(k for s in old_security for k in s.keys()) if old_security else []
+                new_schemes = sorted(k for s in new_security for k in s.keys()) if new_security else []
+                if old_schemes != new_schemes:
+                    diffs.append(ContractDiff(
+                        path=path, method=method,
+                        field="security",
+                        old_value=old_schemes or None,
+                        new_value=new_schemes or None,
+                        diff_type="security_changed",
+                    ))
             if old_req_body or new_req_body:
                 old_schema = (old_req_body.get("content", {})
                               .get("application/json", {})

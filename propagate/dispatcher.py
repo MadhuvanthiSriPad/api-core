@@ -12,6 +12,7 @@ from propagate.bundle import RepoFixBundle
 from propagate.devin_client import DevinClient
 from propagate.guardrails import Guardrails
 from src.config import settings
+from src.database import async_session as async_session_factory
 from src.models.remediation_job import RemediationJob, JobStatus
 from src.models.audit_log import AuditLog
 
@@ -36,7 +37,6 @@ async def _log_transition(
 
 
 async def dispatch_remediation_jobs(
-    db: AsyncSession,
     bundles: list[RepoFixBundle],
     guardrails: Guardrails,
     change_id: int,
@@ -44,6 +44,7 @@ async def dispatch_remediation_jobs(
     """Dispatch Devin jobs concurrently, then return immediately.
 
     Creates remediation_job rows and dispatches Devin sessions.
+    Each dispatch_one() gets its own AsyncSession to avoid concurrency issues.
     Does NOT poll for completion — use ``check_status`` to monitor.
     """
     client = DevinClient()
@@ -53,63 +54,66 @@ async def dispatch_remediation_jobs(
     print(f"\nDispatching {len(bundles)} Devin sessions (concurrency={guardrails.max_parallel})")
 
     async def dispatch_one(bundle: RepoFixBundle) -> RemediationJob:
-        # Validate guardrails: check client_paths against protected_paths
-        violations = guardrails.validate_paths(bundle.client_paths)
-        if violations:
-            logger.warning(
-                "Guardrail violation for %s: %s", bundle.target_service, violations
-            )
+        # Each coroutine gets its own session to avoid concurrent AsyncSession use
+        async with async_session_factory() as own_db:
+            # Validate guardrails: check client_paths against protected_paths
+            violations = guardrails.validate_paths(bundle.client_paths)
+            if violations:
+                logger.warning(
+                    "Guardrail violation for %s: %s", bundle.target_service, violations
+                )
+                job = RemediationJob(
+                    change_id=change_id,
+                    target_repo=bundle.target_repo,
+                    status=JobStatus.NEEDS_HUMAN.value,
+                    bundle_hash=bundle.bundle_hash,
+                    error_summary=f"Guardrail violation: {'; '.join(violations)}",
+                )
+                own_db.add(job)
+                await own_db.flush()
+                await _log_transition(
+                    own_db, job, None, JobStatus.NEEDS_HUMAN.value,
+                    f"Blocked by guardrail: {'; '.join(violations)}"
+                )
+                await own_db.commit()
+                print(f"  [{bundle.target_service}] BLOCKED by guardrail: {violations}")
+                return job
+
             job = RemediationJob(
                 change_id=change_id,
                 target_repo=bundle.target_repo,
-                status=JobStatus.NEEDS_HUMAN.value,
+                status=JobStatus.QUEUED.value,
                 bundle_hash=bundle.bundle_hash,
-                error_summary=f"Guardrail violation: {'; '.join(violations)}",
             )
-            db.add(job)
-            await db.flush()
-            await _log_transition(
-                db, job, None, JobStatus.NEEDS_HUMAN.value,
-                f"Blocked by guardrail: {'; '.join(violations)}"
-            )
-            print(f"  [{bundle.target_service}] BLOCKED by guardrail: {violations}")
-            return job
+            own_db.add(job)
+            await own_db.flush()
+            await _log_transition(own_db, job, None, JobStatus.QUEUED.value, "Job created")
 
-        job = RemediationJob(
-            change_id=change_id,
-            target_repo=bundle.target_repo,
-            status=JobStatus.QUEUED.value,
-            bundle_hash=bundle.bundle_hash,
-        )
-        db.add(job)
-        await db.flush()
-        await _log_transition(db, job, None, JobStatus.QUEUED.value, "Job created")
+            async with semaphore:
+                try:
+                    old = job.status
+                    job.status = JobStatus.RUNNING.value
+                    await _log_transition(own_db, job, old, JobStatus.RUNNING.value, "Dispatching to Devin")
+                    await own_db.flush()
 
-        async with semaphore:
-            try:
-                old = job.status
-                job.status = JobStatus.RUNNING.value
-                await _log_transition(db, job, old, JobStatus.RUNNING.value, "Dispatching to Devin")
-                await db.flush()
+                    session = await client.create_session(bundle.prompt)
+                    job.devin_run_id = session.get("session_id", "")
+                    await own_db.flush()
 
-                session = await client.create_session(bundle.prompt)
-                job.devin_run_id = session.get("session_id", "")
-                await db.flush()
+                    session_url = f"{settings.devin_app_base}/sessions/{job.devin_run_id}"
+                    print(f"  [{bundle.target_service}] dispatched -> {session_url}")
 
-                session_url = f"{settings.devin_app_base}/sessions/{job.devin_run_id}"
-                print(f"  [{bundle.target_service}] dispatched -> {session_url}")
+                except Exception as e:
+                    old = job.status
+                    job.status = JobStatus.NEEDS_HUMAN.value
+                    job.error_summary = str(e)
+                    await _log_transition(own_db, job, old, JobStatus.NEEDS_HUMAN.value, str(e))
+                    logger.exception("Dispatch failed for %s", bundle.target_service)
+                    print(f"  [{bundle.target_service}] FAILED: {e}")
 
-            except Exception as e:
-                old = job.status
-                job.status = JobStatus.NEEDS_HUMAN.value
-                job.error_summary = str(e)
-                await _log_transition(db, job, old, JobStatus.NEEDS_HUMAN.value, str(e))
-                logger.exception("Dispatch failed for %s", bundle.target_service)
-                print(f"  [{bundle.target_service}] FAILED: {e}")
-
-            job.updated_at = datetime.now(timezone.utc)
-            await db.flush()
-            return job
+                job.updated_at = datetime.now(timezone.utc)
+                await own_db.commit()
+                return job
 
     tasks = [dispatch_one(bundle) for bundle in bundles]
     completed_jobs = await asyncio.gather(*tasks, return_exceptions=True)
@@ -119,8 +123,6 @@ async def dispatch_remediation_jobs(
             jobs.append(result)
         elif isinstance(result, Exception):
             logger.error("Job dispatch exception: %s", result)
-
-    await db.commit()
 
     dispatched = sum(1 for j in jobs if j.devin_run_id)
     failed = len(jobs) - dispatched

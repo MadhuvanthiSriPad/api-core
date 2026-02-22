@@ -15,6 +15,7 @@ from src.models.usage_request import UsageRequest
 class ImpactRecord:
     caller_service: str
     route_template: str
+    method: str
     calls_last_7d: int
 
 
@@ -45,6 +46,7 @@ async def compute_impact_sets(
             select(
                 UsageRequest.caller_service,
                 UsageRequest.route_template,
+                UsageRequest.method,
                 func.count(UsageRequest.id).label("call_count"),
             )
             .where(
@@ -53,13 +55,14 @@ async def compute_impact_sets(
                 UsageRequest.route_template == route_template,
                 UsageRequest.caller_service != "unknown",
             )
-            .group_by(UsageRequest.caller_service, UsageRequest.route_template)
+            .group_by(UsageRequest.caller_service, UsageRequest.route_template, UsageRequest.method)
         )
 
         for row in result.all():
             impacts.append(ImpactRecord(
                 caller_service=row.caller_service,
                 route_template=row.route_template,
+                method=row.method,
                 calls_last_7d=row.call_count,
             ))
 

@@ -160,7 +160,7 @@ def build_fix_bundles(
             print(f"  WARNING: No service_map entry for '{svc_name}', skipping")
             continue
 
-        affected_routes = sorted(set(f"{imp.route_template}" for imp in svc_impacts))
+        affected_routes = sorted(set(f"{imp.method.upper()} {imp.route_template}" for imp in svc_impacts))
         total_calls = sum(imp.calls_last_7d for imp in svc_impacts)
 
         prompt = _build_devin_prompt(svc_name, change, affected_routes, svc_info)

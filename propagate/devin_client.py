@@ -24,7 +24,8 @@ class DevinClient:
         self.api_key = api_key or settings.devin_api_key
         if not self.api_key:
             raise ValueError(
-                "DEVIN_API_KEY is required. Set it as an environment variable."
+                "Devin API key is required. "
+                "Set API_CORE_DEVIN_API_KEY as an environment variable."
             )
         self.base_url = settings.devin_api_base
         self.headers = {
@@ -55,6 +56,13 @@ class DevinClient:
                         )
                         await asyncio.sleep(delay)
                         continue
+                    if resp.status_code in (401, 403):
+                        raise httpx.HTTPStatusError(
+                            f"Authentication failed ({resp.status_code}) for {method.upper()} {url}. "
+                            f"Check that API_CORE_DEVIN_API_KEY is set correctly.",
+                            request=resp.request,
+                            response=resp,
+                        )
                     resp.raise_for_status()
                     return resp
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
@@ -68,7 +76,10 @@ class DevinClient:
                     )
                     await asyncio.sleep(delay)
                 else:
-                    raise
+                    raise type(exc)(
+                        f"{type(exc).__name__} on {method.upper()} {url} "
+                        f"after {_MAX_RETRIES + 1} attempts (last delay: {_BASE_DELAY * (2 ** attempt):.1f}s)"
+                    ) from exc
         # Should not reach here, but satisfy type checker
         raise last_exc  # type: ignore[misc]
 

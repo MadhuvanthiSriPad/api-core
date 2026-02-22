@@ -24,3 +24,32 @@ jobs:
         run: python -c "import src.config, src.database"
       - name: Run tests
         run: pytest tests/ -v
+      - name: Validate OpenAPI spec matches FastAPI routes
+        run: |
+          python -c "
+          import json, yaml, sys
+          from src.main import app
+
+          generated = app.openapi()
+          with open('openapi.yaml') as f:
+              declared = yaml.safe_load(f)
+
+          gen_paths = set(generated.get('paths', {}).keys())
+          dec_paths = set(declared.get('paths', {}).keys())
+
+          missing_in_spec = gen_paths - dec_paths
+          extra_in_spec = dec_paths - gen_paths
+
+          errors = []
+          if missing_in_spec:
+              errors.append(f'Routes in FastAPI but not in openapi.yaml: {missing_in_spec}')
+          if extra_in_spec:
+              errors.append(f'Routes in openapi.yaml but not in FastAPI: {extra_in_spec}')
+
+          if errors:
+              for e in errors:
+                  print(f'ERROR: {e}', file=sys.stderr)
+              sys.exit(1)
+          else:
+              print(f'OpenAPI spec matches FastAPI routes ({len(gen_paths)} paths)')
+          "

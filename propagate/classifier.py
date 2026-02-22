@@ -20,6 +20,11 @@ BREAKING_DIFF_TYPES = {
     "nested_field_removed",
     "nested_field_type_changed",
     "array_item_type_changed",
+    "parameter_added_required",
+    "parameter_removed",
+    "parameter_type_changed",
+    "content_type_changed",
+    "security_changed",
 }
 
 

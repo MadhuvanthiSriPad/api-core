@@ -18,6 +18,7 @@ except ModuleNotFoundError:
 
 
 class Settings(BaseSettings):
+    # For production, use: postgresql+asyncpg://user:pass@host:5432/api_core
     database_url: str = "sqlite+aiosqlite:///./api_core.db"
     api_prefix: str = "/api/v1"
     api_version: str = "2.0.0"
@@ -30,6 +31,9 @@ class Settings(BaseSettings):
 
     # CORS
     allowed_origins: str = "http://localhost:3000,http://localhost:5173"
+
+    # GitHub
+    github_token: str = ""
 
     # Devin API
     devin_api_key: str = ""

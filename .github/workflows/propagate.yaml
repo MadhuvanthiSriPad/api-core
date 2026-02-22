@@ -10,8 +10,9 @@ jobs:
   propagate:
     runs-on: ubuntu-latest
     env:
-      DEVIN_API_KEY: ${{ secrets.DEVIN_API_KEY }}
+      API_CORE_DEVIN_API_KEY: ${{ secrets.DEVIN_API_KEY }}
       API_CORE_DATABASE_URL: sqlite+aiosqlite:///./data/api_core.db
+      API_CORE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PROPAGATE_AUTO_MERGE: "false"
 
     steps:
@@ -37,8 +38,53 @@ jobs:
       - name: Prepare data directory
         run: mkdir -p data
 
+      - name: Seed baseline contract from base branch
+        run: |
+          python -c "
+          import asyncio, hashlib, json, os, sys
+          sys.path.insert(0, '.')
+          os.environ.setdefault('API_CORE_DATABASE_URL', 'sqlite+aiosqlite:///./data/api_core.db')
+
+          async def seed():
+              import subprocess
+              try:
+                  base_content = subprocess.check_output(
+                      ['git', 'show', 'origin/main:openapi.yaml'], text=True
+                  )
+              except subprocess.CalledProcessError:
+                  print('No base branch openapi.yaml found, seeding empty baseline')
+                  base_content = json.dumps({'openapi': '3.1.0', 'info': {}, 'paths': {}})
+
+              from src.database import async_session, init_db
+              from src.models.contract_snapshot import ContractSnapshot
+              await init_db()
+
+              base_hash = hashlib.sha256(base_content.encode()).hexdigest()[:16]
+              async with async_session() as db:
+                  from sqlalchemy import select
+                  existing = await db.execute(
+                      select(ContractSnapshot).limit(1)
+                  )
+                  if existing.scalar_one_or_none() is not None:
+                      print('Baseline already exists, skipping seed')
+                      return
+                  snapshot = ContractSnapshot(
+                      version_hash=base_hash,
+                      content=base_content,
+                      git_sha=os.getenv('GITHUB_SHA', ''),
+                  )
+                  db.add(snapshot)
+                  await db.commit()
+                  print(f'Seeded baseline contract: {base_hash}')
+
+          asyncio.run(seed())
+          "
+
+      - name: Run database migrations
+        run: alembic upgrade head
+
       - name: Detect and propagate contract changes
-        run: python -m propagate 2>&1 | tee data/propagate.log
+        run: python -m propagate --ci 2>&1 | tee data/propagate.log
 
       - name: Upload logs on failure
         if: failure()

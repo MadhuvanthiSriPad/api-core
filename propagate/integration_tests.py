@@ -136,6 +136,9 @@ class IntegrationTestRunner:
             # Test 4: End-to-end flow
             results["test_e2e_flow"] = await self.test_e2e_flow(client)
 
+            # Test 5: Contract conformance
+            results["test_contract_conformance"] = await self.test_contract_conformance(client)
+
         return results
 
     async def test_create_session(self, client: httpx.AsyncClient) -> bool:
@@ -253,6 +256,62 @@ class IntegrationTestRunner:
             return False
         except Exception as e:
             print(f"  [FAIL] test_e2e_flow ({e})")
+            return False
+
+    async def test_contract_conformance(self, client: httpx.AsyncClient) -> bool:
+        """Validate that a session response matches the SessionResponse schema from openapi.yaml."""
+        try:
+            # Create a session
+            create_resp = await client.post(
+                f"{self.base_url_api}/api/v1/sessions",
+                json={"team_id": "conformance-test", "agent_name": "conformance", "priority": "low"}
+            )
+            if create_resp.status_code != 201:
+                print(f"  [FAIL] test_contract_conformance (create returned {create_resp.status_code})")
+                return False
+
+            data = create_resp.json()
+
+            # Validate against SessionResponse schema fields
+            required_fields = {"session_id", "team_id", "agent_name", "status"}
+            missing = required_fields - set(data.keys())
+            if missing:
+                print(f"  [FAIL] test_contract_conformance (missing fields: {missing})")
+                return False
+
+            # Validate nested usage object
+            if "usage" not in data:
+                print("  [FAIL] test_contract_conformance (missing 'usage' object)")
+                return False
+            usage = data["usage"]
+            for field in ("input_tokens", "output_tokens", "cached_tokens"):
+                if field not in usage:
+                    print(f"  [FAIL] test_contract_conformance (missing usage.{field})")
+                    return False
+
+            # Validate nested billing object
+            if "billing" not in data:
+                print("  [FAIL] test_contract_conformance (missing 'billing' object)")
+                return False
+            if "total" not in data["billing"]:
+                print("  [FAIL] test_contract_conformance (missing billing.total)")
+                return False
+
+            # Validate types
+            if not isinstance(data["session_id"], str):
+                print("  [FAIL] test_contract_conformance (session_id not string)")
+                return False
+            if not isinstance(usage["input_tokens"], int):
+                print("  [FAIL] test_contract_conformance (input_tokens not int)")
+                return False
+            if not isinstance(data["billing"]["total"], (int, float)):
+                print("  [FAIL] test_contract_conformance (billing.total not number)")
+                return False
+
+            print("  [PASS] test_contract_conformance")
+            return True
+        except Exception as e:
+            print(f"  [FAIL] test_contract_conformance ({e})")
             return False
 
     def print_summary(self, results: Dict):

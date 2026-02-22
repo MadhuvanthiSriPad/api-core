@@ -15,7 +15,9 @@ import asyncio
 import hashlib
 import json
 import os
+import random
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -31,17 +33,54 @@ from propagate.bundle import build_fix_bundles
 from propagate.dispatcher import dispatch_remediation_jobs
 from propagate.guardrails import load_guardrails
 from propagate.dependency_graph import build_dependency_graph_from_service_map
+from propagate.check_status import check_jobs, TERMINAL_STATUSES
 
 from src.database import async_session, init_db
 from src.models.contract_snapshot import ContractSnapshot
 from src.models.contract_change import ContractChange
 from src.models.impact_set import ImpactSet
+from src.models.remediation_job import RemediationJob
 
 
 CONTRACT_PATH = Path(__file__).resolve().parent.parent / "openapi.yaml"
 
+WAVE_POLL_INTERVAL = 30  # seconds between wave completion polls
+WAVE_MAX_POLLS = 60      # max polls (30 min timeout)
 
-async def main(dry_run: bool = False):
+
+async def _wait_for_wave_completion(job_ids: list[int], wave_idx: int) -> bool:
+    """Poll until all jobs in the wave reach a terminal status.
+
+    Returns True if all jobs completed, False on timeout.
+    """
+    from sqlalchemy import select
+
+    for poll in range(WAVE_MAX_POLLS):
+        await asyncio.sleep(WAVE_POLL_INTERVAL)
+        try:
+            await check_jobs()
+        except Exception as e:
+            print(f"  Wave {wave_idx} poll error: {e}")
+
+        async with async_session() as db:
+            result = await db.execute(
+                select(RemediationJob).where(
+                    RemediationJob.job_id.in_(job_ids),
+                    RemediationJob.status.notin_(TERMINAL_STATUSES),
+                    RemediationJob.devin_run_id.isnot(None),
+                )
+            )
+            pending = list(result.scalars().all())
+            if not pending:
+                print(f"  Wave {wave_idx} complete — all jobs reached terminal status")
+                return True
+            print(f"  Wave {wave_idx} poll {poll + 1}: {len(pending)} job(s) still running")
+
+    print(f"  Wave {wave_idx} timed out after {WAVE_MAX_POLLS} polls")
+    return False
+
+
+async def main(dry_run: bool = False, no_wait: bool = False, ci: bool = False):
     print("=" * 60)
     print("CONTRACT CHANGE PROPAGATION ENGINE")
     if dry_run:
@@ -76,23 +115,39 @@ async def main(dry_run: bool = False):
         old_snapshot = result.scalar_one_or_none()
 
         if old_snapshot is None:
-            print("No previous contract snapshot found. Storing current as baseline.")
-            snapshot = ContractSnapshot(
-                version_hash=new_hash,
-                content=new_content,
-                git_sha=os.getenv("GITHUB_SHA", ""),
-            )
-            db.add(snapshot)
-            await db.commit()
-            print("Baseline stored. No diff to propagate.")
-            return
+            if ci:
+                # In CI mode, use an empty spec as baseline so first PR always produces a diff
+                print("No previous snapshot found (CI mode). Using empty baseline for diff.")
+                old_spec = {"openapi": "3.1.0", "info": {}, "paths": {}}
+                # Store the empty baseline
+                empty_content = json.dumps(old_spec)
+                empty_hash = hashlib.sha256(empty_content.encode()).hexdigest()[:16]
+                baseline = ContractSnapshot(
+                    version_hash=empty_hash,
+                    content=empty_content,
+                    git_sha=os.getenv("GITHUB_SHA", ""),
+                )
+                db.add(baseline)
+                await db.flush()
+            else:
+                print("No previous contract snapshot found. Storing current as baseline.")
+                snapshot = ContractSnapshot(
+                    version_hash=new_hash,
+                    content=new_content,
+                    git_sha=os.getenv("GITHUB_SHA", ""),
+                )
+                db.add(snapshot)
+                await db.commit()
+                print("Baseline stored. No diff to propagate.")
+                return
 
-        if old_snapshot.version_hash == new_hash:
-            print("Contract unchanged. Nothing to propagate.")
-            return
+        if old_snapshot is not None:
+            if old_snapshot.version_hash == new_hash:
+                print("Contract unchanged. Nothing to propagate.")
+                return
 
-        old_spec = yaml.safe_load(old_snapshot.content)
-        print(f"Old contract hash: {old_snapshot.version_hash}")
+            old_spec = yaml.safe_load(old_snapshot.content)
+            print(f"Old contract hash: {old_snapshot.version_hash}")
 
         # Step 1: Diff contracts
         print("\n--- STEP 1: Diffing contracts ---")
@@ -145,6 +200,7 @@ async def main(dry_run: bool = False):
             impact_row = ImpactSet(
                 change_id=change.id,
                 route_template=imp.route_template,
+                method=imp.method,
                 caller_service=imp.caller_service,
                 calls_last_7d=imp.calls_last_7d,
                 confidence="high",
@@ -190,6 +246,7 @@ async def main(dry_run: bool = False):
 
         if dry_run:
             print("  [DRY-RUN] Simulating dispatch — no API calls will be made")
+            sim_results = []
             for wave_idx, wave_services in enumerate(waves):
                 wave_bundles = [
                     bundle_by_service[svc]
@@ -203,21 +260,74 @@ async def main(dry_run: bool = False):
                     violations = guardrails.validate_paths(b.client_paths)
                     if violations:
                         print(f"    [{b.target_service}] WOULD BE BLOCKED: {violations}")
+                        # Store blocked simulation result
+                        sim_job = RemediationJob(
+                            change_id=change.id,
+                            target_repo=b.target_repo,
+                            status="needs_human",
+                            bundle_hash=b.bundle_hash,
+                            error_summary=f"Guardrail violation: {'; '.join(violations)}",
+                            is_dry_run=True,
+                        )
+                        db.add(sim_job)
+                        sim_results.append((b.target_service, "NEEDS_HUMAN", 0, "guardrail blocked"))
                     else:
                         print(f"    [{b.target_service}] → {b.target_repo}")
                         print(f"      Prompt length: {len(b.prompt)} chars")
                         print(f"      Affected routes: {b.affected_routes}")
-                        print(f"      Total calls (7d): {b.call_count_7d}")
 
-            # Simulate check_status results
-            print("\n--- STEP 6b: Simulated check_status results ---")
-            statuses = ["green", "pr_opened", "ci_failed", "needs_human"]
-            for i, b in enumerate(bundles):
-                sim_status = statuses[i % len(statuses)]
-                merge_ok, merge_reason = guardrails.check_can_merge(sim_status == "green")
-                print(f"  [{b.target_service}] status={sim_status} | merge: {merge_reason}")
+            # Simulate realistic randomized lifecycle
+            print("\n--- STEP 6b: Simulated check_status lifecycle ---")
+            for b in bundles:
+                violations = guardrails.validate_paths(b.client_paths)
+                if violations:
+                    continue
 
-            print(f"\n[DRY-RUN] Pipeline complete. {len(bundles)} bundle(s) would be dispatched.")
+                # Randomized terminal state: GREEN 60%, CI_FAILED 20%, NEEDS_HUMAN 20%
+                roll = random.random()
+                if roll < 0.6:
+                    terminal = "GREEN"
+                    detail = "CI passed, PR ready for review"
+                elif roll < 0.8:
+                    terminal = "CI_FAILED"
+                    detail = "CI failed: test assertions broke"
+                else:
+                    terminal = "NEEDS_HUMAN"
+                    detail = "Devin session blocked, requires human review"
+
+                duration_min = random.randint(15, 90)
+
+                print(f"  [{b.target_service}] QUEUED -> RUNNING -> PR_OPENED -> {terminal} ({duration_min}m)")
+                print(f"    {detail}")
+
+                sim_job = RemediationJob(
+                    change_id=change.id,
+                    target_repo=b.target_repo,
+                    status=terminal.lower(),
+                    bundle_hash=b.bundle_hash,
+                    is_dry_run=True,
+                    error_summary=detail if terminal != "GREEN" else None,
+                )
+                db.add(sim_job)
+                sim_results.append((b.target_service, terminal, duration_min, detail))
+
+            await db.flush()
+
+            # Print summary table
+            print(f"\n{'='*60}")
+            print("DRY-RUN SIMULATION SUMMARY")
+            print(f"{'='*60}")
+            print(f"  {'Service':<25} {'Status':<15} {'Time':<8} Detail")
+            print(f"  {'-'*25} {'-'*15} {'-'*8} {'-'*30}")
+            for svc, status, mins, detail in sim_results:
+                time_str = f"{mins}m" if mins else "—"
+                print(f"  {svc:<25} {status:<15} {time_str:<8} {detail[:40]}")
+
+            green = sum(1 for _, s, _, _ in sim_results if s == "GREEN")
+            failed = sum(1 for _, s, _, _ in sim_results if s == "CI_FAILED")
+            human = sum(1 for _, s, _, _ in sim_results if s == "NEEDS_HUMAN")
+            print(f"\n  Totals: {green} GREEN, {failed} CI_FAILED, {human} NEEDS_HUMAN")
+            print(f"\n[DRY-RUN] Pipeline complete. {len(bundles)} bundle(s) simulated.")
         else:
             for wave_idx, wave_services in enumerate(waves):
                 wave_bundles = [
@@ -229,9 +339,16 @@ async def main(dry_run: bool = False):
                     continue
                 print(f"\n  Wave {wave_idx}: {[b.target_service for b in wave_bundles]}")
                 wave_jobs = await dispatch_remediation_jobs(
-                    db, wave_bundles, guardrails, change.id
+                    wave_bundles, guardrails, change.id
                 )
                 jobs.extend(wave_jobs)
+
+                # Wait for wave completion before proceeding to next wave
+                if not no_wait and wave_idx < len(waves) - 1:
+                    dispatched_ids = [j.job_id for j in wave_jobs if j.devin_run_id]
+                    if dispatched_ids:
+                        print(f"\n  Waiting for wave {wave_idx} to complete before starting wave {wave_idx + 1}...")
+                        await _wait_for_wave_completion(dispatched_ids, wave_idx)
 
         # Step 7: Store new snapshot
         snapshot = ContractSnapshot(
@@ -258,8 +375,18 @@ def cli():
         action="store_true",
         help="Simulate the full pipeline without calling the Devin API",
     )
+    parser.add_argument(
+        "--no-wait",
+        action="store_true",
+        help="Skip wave completion gating (fire-and-forget mode)",
+    )
+    parser.add_argument(
+        "--ci",
+        action="store_true",
+        help="CI mode: use empty baseline if no snapshot exists (ensures first PR always diffs)",
+    )
     args = parser.parse_args()
-    asyncio.run(main(dry_run=args.dry_run))
+    asyncio.run(main(dry_run=args.dry_run, no_wait=args.no_wait, ci=args.ci))
 
 
 if __name__ == "__main__":
