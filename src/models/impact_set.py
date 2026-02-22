@@ -14,6 +14,7 @@ class ImpactSet(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     change_id: Mapped[int] = mapped_column(Integer, ForeignKey("contract_changes.id"), nullable=False)
     route_template: Mapped[str] = mapped_column(String(500), nullable=False)
+    method: Mapped[str] = mapped_column(String(10), nullable=True)
     caller_service: Mapped[str] = mapped_column(String(100), nullable=False)
     calls_last_7d: Mapped[int] = mapped_column(Integer, default=0)
     confidence: Mapped[str] = mapped_column(String(20), default="high")

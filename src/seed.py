@@ -286,6 +286,7 @@ async def seed_contract_change_demo(db: AsyncSession):
         ImpactSet(
             change_id=change.id,
             route_template="/api/v1/sessions",
+            method="GET",
             caller_service="billing-service",
             calls_last_7d=312,
             confidence="high",
@@ -294,6 +295,7 @@ async def seed_contract_change_demo(db: AsyncSession):
         ImpactSet(
             change_id=change.id,
             route_template="/api/v1/sessions",
+            method="POST",
             caller_service="billing-service",
             calls_last_7d=245,
             confidence="high",
@@ -302,6 +304,7 @@ async def seed_contract_change_demo(db: AsyncSession):
         ImpactSet(
             change_id=change.id,
             route_template="/api/v1/sessions",
+            method="GET",
             caller_service="dashboard-service",
             calls_last_7d=487,
             confidence="high",
@@ -310,6 +313,7 @@ async def seed_contract_change_demo(db: AsyncSession):
         ImpactSet(
             change_id=change.id,
             route_template="/api/v1/sessions/{session_id}",
+            method="GET",
             caller_service="dashboard-service",
             calls_last_7d=156,
             confidence="medium",

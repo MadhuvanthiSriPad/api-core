@@ -460,6 +460,41 @@ paths:
         "404":
           description: Change not found
 
+  /api/v1/invoices/team-summary:
+    get:
+      operationId: getTeamSummary
+      summary: Get session counts and costs grouped by team for invoice generation
+      tags:
+        - invoices
+      parameters:
+        - name: hours
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 720
+            maximum: 8760
+      responses:
+        "200":
+          description: Team invoice summaries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    team_id:
+                      type: string
+                    session_count:
+                      type: integer
+                    total_cost:
+                      type: number
+                    total_input_tokens:
+                      type: integer
+                    total_output_tokens:
+                      type: integer
+
 components:
   schemas:
     SessionCreate:

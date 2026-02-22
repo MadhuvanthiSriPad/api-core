@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.config import settings
 from src.database import init_db
 from src.middleware.usage_telemetry import UsageTelemetryMiddleware
-from src.routes import sessions, teams, analytics, usage, contracts
+from src.routes import sessions, teams, analytics, usage, contracts, invoices
 
 
 @asynccontextmanager
@@ -39,6 +39,7 @@ app.include_router(teams.router, prefix=settings.api_prefix)
 app.include_router(analytics.router, prefix=settings.api_prefix)
 app.include_router(usage.router, prefix=settings.api_prefix)
 app.include_router(contracts.router, prefix=settings.api_prefix)
+app.include_router(invoices.router, prefix=settings.api_prefix)
 
 
 @app.get("/health")

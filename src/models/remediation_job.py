@@ -3,7 +3,7 @@
 import enum
 from datetime import datetime, timezone
 
-from sqlalchemy import String, DateTime, Text, Integer, ForeignKey
+from sqlalchemy import Boolean, String, DateTime, Text, Integer, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.database import Base
@@ -38,6 +38,7 @@ class RemediationJob(Base):
     )
     bundle_hash: Mapped[str] = mapped_column(String(64), nullable=True)
     error_summary: Mapped[str] = mapped_column(Text, nullable=True)
+    is_dry_run: Mapped[bool] = mapped_column(Boolean, default=False)
 
     change = relationship("ContractChange", back_populates="remediation_jobs")
     audit_entries = relationship("AuditLog", back_populates="job", lazy="selectin")
