@@ -40,12 +40,12 @@ class DependencyGraph:
                 ["invoice-service"]  # Wave 2: Depends on billing-service
             ]
         """
-        # Count incoming edges for each node
+        # Count incoming edges for each node (number of dependencies)
         in_degree = {name: 0 for name in self.nodes}
         for node in self.nodes.values():
             for dep in node.depends_on:
                 if dep in in_degree:
-                    in_degree[dep] += 1
+                    in_degree[node.name] += 1
 
         waves = []
         processed = set()
@@ -65,12 +65,11 @@ class DependencyGraph:
             waves.append(sorted(current_wave))
             processed.update(current_wave)
 
-            # Reduce in-degree for nodes depending on current wave
+            # Reduce in-degree for nodes that depend on services in current wave
             for service in current_wave:
-                if service in self.nodes:
-                    for dep in self.nodes[service].depends_on:
-                        if dep in in_degree:
-                            in_degree[dep] -= 1
+                for node in self.nodes.values():
+                    if node.name not in processed and service in node.depends_on:
+                        in_degree[node.name] -= 1
 
         return waves
 
@@ -102,24 +101,27 @@ class DependencyGraph:
         return sorted(affected)
 
 
-def build_dependency_graph_from_service_map(service_map: dict) -> DependencyGraph:
+def build_dependency_graph_from_service_map(
+    service_map: "dict[str, ServiceInfo]",
+) -> DependencyGraph:
     """
-    Build dependency graph from service_map.yaml structure.
+    Build dependency graph from loaded service map.
 
     Args:
-        service_map: Parsed service_map.yaml
+        service_map: Dict mapping service name to ServiceInfo (from load_service_map)
 
     Returns:
         DependencyGraph instance
     """
+    from propagate.service_map import ServiceInfo
+
     graph = DependencyGraph()
 
     # Add api-core as root (no dependencies)
     graph.add_service("api-core", depends_on=[])
 
-    # Add other services (all depend on api-core for now)
+    # Add other services with their declared dependencies
     for service_name, service_info in service_map.items():
-        dependencies = service_info.get("depends_on", ["api-core"])
-        graph.add_service(service_name, depends_on=dependencies)
+        graph.add_service(service_name, depends_on=service_info.depends_on)
 
     return graph

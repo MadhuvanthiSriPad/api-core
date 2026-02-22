@@ -2,6 +2,8 @@ services:
   billing-service:
     repo: "https://github.com/MadhuvanthiSriPad/billing-service"
     language: python
+    depends_on:
+      - "api-core"
     client_paths:
       - "src/clients/gateway.py"
       - "src/routes/invoices.py"
@@ -11,6 +13,8 @@ services:
   dashboard-service:
     repo: "https://github.com/MadhuvanthiSriPad/dashboard-service"
     language: python
+    depends_on:
+      - "api-core"
     client_paths:
       - "src/main.py"
     test_paths:

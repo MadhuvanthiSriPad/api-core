@@ -33,10 +33,16 @@ def _resolve_ref(spec: dict, ref: str) -> dict:
     return node
 
 
+def _resolve_schema(spec: dict, schema: dict) -> dict:
+    """Resolve a schema, following $ref if present."""
+    if "$ref" in schema:
+        return _resolve_ref(spec, schema["$ref"])
+    return schema
+
+
 def _get_schema_properties(spec: dict, schema: dict) -> dict:
     """Get properties from a schema, resolving $ref if needed."""
-    if "$ref" in schema:
-        schema = _resolve_ref(spec, schema["$ref"])
+    schema = _resolve_schema(spec, schema)
     return schema.get("properties", {})
 
 
@@ -45,6 +51,71 @@ def _get_required_fields(spec: dict, schema: dict) -> set:
     if "$ref" in schema:
         schema = _resolve_ref(spec, schema["$ref"])
     return set(schema.get("required", []))
+
+
+def _diff_nested(
+    old_spec: dict,
+    new_spec: dict,
+    old_field: dict,
+    new_field: dict,
+    path: str,
+    method: str,
+    field_prefix: str,
+    diffs: list[ContractDiff],
+) -> None:
+    """Recursively detect changes in nested object and array schemas."""
+    old_resolved = _resolve_schema(old_spec, old_field)
+    new_resolved = _resolve_schema(new_spec, new_field)
+
+    # Nested object: compare sub-properties
+    if old_resolved.get("type") == "object" and new_resolved.get("type") == "object":
+        old_sub = old_resolved.get("properties", {})
+        new_sub = new_resolved.get("properties", {})
+
+        for sub_name in set(old_sub.keys()) - set(new_sub.keys()):
+            diffs.append(ContractDiff(
+                path=path, method=method,
+                field=f"{field_prefix}.{sub_name}",
+                old_value=old_sub[sub_name],
+                new_value=None,
+                diff_type="nested_field_removed",
+            ))
+
+        for sub_name in set(new_sub.keys()) - set(old_sub.keys()):
+            diffs.append(ContractDiff(
+                path=path, method=method,
+                field=f"{field_prefix}.{sub_name}",
+                old_value=None,
+                new_value=new_sub[sub_name],
+                diff_type="nested_field_added",
+            ))
+
+        for sub_name in set(old_sub.keys()) & set(new_sub.keys()):
+            old_t = old_sub[sub_name].get("type")
+            new_t = new_sub[sub_name].get("type")
+            if old_t != new_t:
+                diffs.append(ContractDiff(
+                    path=path, method=method,
+                    field=f"{field_prefix}.{sub_name}",
+                    old_value=old_t,
+                    new_value=new_t,
+                    diff_type="nested_field_type_changed",
+                ))
+
+    # Array items: compare item schema
+    if old_resolved.get("type") == "array" and new_resolved.get("type") == "array":
+        old_items = old_resolved.get("items", {})
+        new_items = new_resolved.get("items", {})
+        old_item_type = _resolve_schema(old_spec, old_items).get("type")
+        new_item_type = _resolve_schema(new_spec, new_items).get("type")
+        if old_item_type and new_item_type and old_item_type != new_item_type:
+            diffs.append(ContractDiff(
+                path=path, method=method,
+                field=f"{field_prefix}.items",
+                old_value=old_item_type,
+                new_value=new_item_type,
+                diff_type="array_item_type_changed",
+            ))
 
 
 def diff_contracts(old_spec: dict, new_spec: dict) -> list[ContractDiff]:
@@ -101,7 +172,7 @@ def diff_contracts(old_spec: dict, new_spec: dict) -> list[ContractDiff]:
                 old_required = _get_required_fields(old_spec, old_schema)
                 new_required = _get_required_fields(new_spec, new_schema)
 
-                # Check for new required fields (breaking)
+                # Check for new required fields (breaking) — both brand-new and optional→required
                 for field_name in new_required - old_required:
                     if field_name not in old_props:
                         diffs.append(ContractDiff(
@@ -110,6 +181,15 @@ def diff_contracts(old_spec: dict, new_spec: dict) -> list[ContractDiff]:
                             old_value=None,
                             new_value=new_props.get(field_name),
                             diff_type="field_added_required",
+                        ))
+                    else:
+                        # Existing optional field promoted to required (breaking)
+                        diffs.append(ContractDiff(
+                            path=path, method=method,
+                            field=f"request.body.{field_name}",
+                            old_value="optional",
+                            new_value="required",
+                            diff_type="field_optional_to_required",
                         ))
 
                 # Check for removed fields
@@ -122,10 +202,12 @@ def diff_contracts(old_spec: dict, new_spec: dict) -> list[ContractDiff]:
                         diff_type="field_removed",
                     ))
 
-                # Check for type changes
+                # Check for type changes, enum narrowing, and nested schema changes
                 for field_name in set(old_props.keys()) & set(new_props.keys()):
-                    old_type = old_props[field_name].get("type")
-                    new_type = new_props[field_name].get("type")
+                    old_field = old_props[field_name]
+                    new_field = new_props[field_name]
+                    old_type = old_field.get("type")
+                    new_type = new_field.get("type")
                     if old_type != new_type:
                         diffs.append(ContractDiff(
                             path=path, method=method,
@@ -134,6 +216,27 @@ def diff_contracts(old_spec: dict, new_spec: dict) -> list[ContractDiff]:
                             new_value=new_type,
                             diff_type="field_type_changed",
                         ))
+
+                    # Enum value narrowing (removing allowed values is breaking)
+                    old_enum = set(old_field.get("enum", []))
+                    new_enum = set(new_field.get("enum", []))
+                    if old_enum and new_enum:
+                        removed_values = old_enum - new_enum
+                        if removed_values:
+                            diffs.append(ContractDiff(
+                                path=path, method=method,
+                                field=f"request.body.{field_name}",
+                                old_value=sorted(old_enum),
+                                new_value=sorted(new_enum),
+                                diff_type="enum_values_removed",
+                            ))
+
+                    # Nested object schema changes
+                    _diff_nested(
+                        old_spec, new_spec, old_field, new_field,
+                        path, method, f"request.body.{field_name}",
+                        diffs,
+                    )
 
             # Compare response schemas
             for status_code in set(old_op.get("responses", {}).keys()) | set(new_op.get("responses", {}).keys()):
@@ -172,10 +275,12 @@ def diff_contracts(old_spec: dict, new_spec: dict) -> list[ContractDiff]:
                             diff_type="response_structure_changed",
                         ))
 
-                # Check for type changes in response
+                # Check for type changes, enum narrowing, and nested changes in response
                 for field_name in set(old_resp_props.keys()) & set(new_resp_props.keys()):
-                    old_type = old_resp_props[field_name].get("type")
-                    new_type = new_resp_props[field_name].get("type")
+                    old_field = old_resp_props[field_name]
+                    new_field = new_resp_props[field_name]
+                    old_type = old_field.get("type")
+                    new_type = new_field.get("type")
                     if old_type != new_type:
                         diffs.append(ContractDiff(
                             path=path, method=method,
@@ -184,5 +289,26 @@ def diff_contracts(old_spec: dict, new_spec: dict) -> list[ContractDiff]:
                             new_value=new_type,
                             diff_type="field_type_changed",
                         ))
+
+                    # Enum narrowing in response
+                    old_enum = set(old_field.get("enum", []))
+                    new_enum = set(new_field.get("enum", []))
+                    if old_enum and new_enum:
+                        removed_values = old_enum - new_enum
+                        if removed_values:
+                            diffs.append(ContractDiff(
+                                path=path, method=method,
+                                field=f"response.{status_code}.{field_name}",
+                                old_value=sorted(old_enum),
+                                new_value=sorted(new_enum),
+                                diff_type="enum_values_removed",
+                            ))
+
+                    # Nested object/array schema changes in response
+                    _diff_nested(
+                        old_spec, new_spec, old_field, new_field,
+                        path, method, f"response.{status_code}.{field_name}",
+                        diffs,
+                    )
 
     return diffs

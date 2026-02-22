@@ -10,11 +10,16 @@ from propagate.differ import ContractDiff
 
 BREAKING_DIFF_TYPES = {
     "field_added_required",
+    "field_optional_to_required",
     "field_removed",
     "field_type_changed",
     "field_moved",
     "response_structure_changed",
     "operation_removed",
+    "enum_values_removed",
+    "nested_field_removed",
+    "nested_field_type_changed",
+    "array_item_type_changed",
 }
 
 
@@ -44,14 +49,22 @@ def classify_changes(diffs: list[ContractDiff]) -> ClassifiedChange:
     is_breaking = len(breaking_diffs) > 0
 
     # Determine severity
-    has_required_field_add = any(d.diff_type == "field_added_required" for d in diffs)
+    has_required_field_add = any(
+        d.diff_type in ("field_added_required", "field_optional_to_required") for d in diffs
+    )
     has_structure_change = any(d.diff_type == "response_structure_changed" for d in diffs)
-    has_field_removed = any(d.diff_type == "field_removed" for d in diffs)
-    has_type_change = any(d.diff_type == "field_type_changed" for d in diffs)
+    has_field_removed = any(
+        d.diff_type in ("field_removed", "nested_field_removed") for d in diffs
+    )
+    has_type_change = any(
+        d.diff_type in ("field_type_changed", "nested_field_type_changed", "array_item_type_changed")
+        for d in diffs
+    )
+    has_enum_narrowing = any(d.diff_type == "enum_values_removed" for d in diffs)
 
     if has_required_field_add or has_structure_change:
         severity = "critical"
-    elif has_field_removed:
+    elif has_field_removed or has_enum_narrowing:
         severity = "high"
     elif has_type_change:
         severity = "medium"
@@ -61,17 +74,20 @@ def classify_changes(diffs: list[ContractDiff]) -> ClassifiedChange:
     # Build summary
     parts = []
     if has_required_field_add:
-        fields = [d.field for d in diffs if d.diff_type == "field_added_required"]
+        fields = [d.field for d in diffs if d.diff_type in ("field_added_required", "field_optional_to_required")]
         parts.append(f"New required field(s): {', '.join(fields)}")
     if has_field_removed:
-        fields = [d.field for d in diffs if d.diff_type == "field_removed"]
+        fields = [d.field for d in diffs if d.diff_type in ("field_removed", "nested_field_removed")]
         parts.append(f"Removed field(s): {', '.join(fields)}")
     if has_structure_change:
         fields = [d.field for d in diffs if d.diff_type == "response_structure_changed"]
         parts.append(f"Response structure changed: {', '.join(fields)}")
     if has_type_change:
-        fields = [d.field for d in diffs if d.diff_type == "field_type_changed"]
+        fields = [d.field for d in diffs if d.diff_type in ("field_type_changed", "nested_field_type_changed", "array_item_type_changed")]
         parts.append(f"Type changed: {', '.join(fields)}")
+    if has_enum_narrowing:
+        fields = [d.field for d in diffs if d.diff_type == "enum_values_removed"]
+        parts.append(f"Enum values removed: {', '.join(fields)}")
 
     summary = "; ".join(parts) if parts else "Non-breaking changes detected"
 

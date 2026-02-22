@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     output_token_price: float = 0.015
     cached_token_price: float = 0.00015
 
+    # CORS
+    allowed_origins: str = "http://localhost:3000,http://localhost:5173"
+
     # Devin API
     devin_api_key: str = ""
     devin_api_base: str = "https://api.devin.ai/v1"

@@ -41,6 +41,6 @@ class UsageTelemetryMiddleware(BaseHTTPMiddleware):
                 db.add(record)
                 await db.commit()
         except Exception:
-            logger.debug("Failed to record usage telemetry", exc_info=True)
+            logger.warning("Failed to record usage telemetry", exc_info=True)
 
         return response

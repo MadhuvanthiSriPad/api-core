@@ -120,6 +120,346 @@ paths:
               schema:
                 $ref: "#/components/schemas/SessionResponse"
 
+  /api/v1/sessions/{session_id}/tokens:
+    post:
+      operationId: recordTokenUsage
+      summary: Record a token usage event for a session
+      tags:
+        - sessions
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: input_tokens
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+        - name: output_tokens
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+        - name: cached_tokens
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "201":
+          description: Token usage recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenUsageRecord"
+        "404":
+          description: Session not found
+
+  /health:
+    get:
+      operationId: healthCheck
+      summary: Health check endpoint
+      tags:
+        - health
+      responses:
+        "200":
+          description: Service health status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /api/v1/teams:
+    get:
+      operationId: listTeams
+      summary: List all teams with session counts and costs
+      tags:
+        - teams
+      responses:
+        "200":
+          description: List of teams
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TeamResponse"
+
+  /api/v1/teams/{team_id}:
+    get:
+      operationId: getTeam
+      summary: Get a single team
+      tags:
+        - teams
+      parameters:
+        - name: team_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Team detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeamResponse"
+        "404":
+          description: Team not found
+
+  /api/v1/analytics/token-usage:
+    get:
+      operationId: getTokenUsage
+      summary: Get token usage statistics for a time period
+      tags:
+        - analytics
+      parameters:
+        - name: team_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: hours
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 24
+            maximum: 720
+      responses:
+        "200":
+          description: Token usage statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenUsageStats"
+
+  /api/v1/analytics/token-usage/daily:
+    get:
+      operationId: getDailyTokenUsage
+      summary: Get daily token usage breakdown for charting
+      tags:
+        - analytics
+      parameters:
+        - name: days
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 7
+            maximum: 30
+      responses:
+        "200":
+          description: Daily token usage breakdown
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DailyTokenUsage"
+
+  /api/v1/analytics/cost-by-team:
+    get:
+      operationId: getCostByTeam
+      summary: Get cost breakdown per team
+      tags:
+        - analytics
+      parameters:
+        - name: hours
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 24
+            maximum: 720
+      responses:
+        "200":
+          description: Cost breakdown by team
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CostByTeam"
+
+  /api/v1/usage/top-routes:
+    get:
+      operationId: getTopRoutes
+      summary: Top API routes by call volume over the last N days
+      tags:
+        - usage
+      parameters:
+        - name: since_days
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 7
+            minimum: 1
+            maximum: 90
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+      responses:
+        "200":
+          description: Top routes by call volume
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TopRouteResponse"
+
+  /api/v1/usage/top-callers:
+    get:
+      operationId: getTopCallers
+      summary: Top caller services, optionally filtered by route
+      tags:
+        - usage
+      parameters:
+        - name: route
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: since_days
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 7
+            minimum: 1
+            maximum: 90
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+      responses:
+        "200":
+          description: Top callers by call count
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TopCallerResponse"
+
+  /api/v1/usage/route-calls:
+    get:
+      operationId: getRouteCalls
+      summary: Recent individual API calls, optionally filtered
+      tags:
+        - usage
+      parameters:
+        - name: route
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: caller_service
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: since_days
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 7
+            minimum: 1
+            maximum: 90
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+      responses:
+        "200":
+          description: List of recent API calls
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RouteCallResponse"
+
+  /api/v1/contracts/current:
+    get:
+      operationId: getCurrentContract
+      summary: Return the current openapi.yaml content and its version hash
+      tags:
+        - contracts
+      responses:
+        "200":
+          description: Current contract content
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContractCurrentResponse"
+        "404":
+          description: openapi.yaml not found
+
+  /api/v1/contracts/changes:
+    get:
+      operationId: listContractChanges
+      summary: List recent contract changes with impact summary
+      tags:
+        - contracts
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+      responses:
+        "200":
+          description: List of contract changes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ContractChangeResponse"
+
+  /api/v1/contracts/changes/{change_id}:
+    get:
+      operationId: getContractChangeDetail
+      summary: Get full detail of a contract change including impacts and remediation jobs
+      tags:
+        - contracts
+      parameters:
+        - name: change_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Contract change detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContractChangeDetailResponse"
+        "404":
+          description: Change not found
+
 components:
   schemas:
     SessionCreate:
@@ -244,3 +584,292 @@ components:
           type: number
         success_rate:
           type: number
+
+    TokenUsageRecord:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        model:
+          type: string
+        input_tokens:
+          type: integer
+        output_tokens:
+          type: integer
+        cached_tokens:
+          type: integer
+        cost:
+          type: number
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        service:
+          type: string
+        version:
+          type: string
+
+    TeamResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        plan:
+          type: string
+        monthly_budget:
+          type: number
+        created_at:
+          type: string
+          format: date-time
+        session_count:
+          type: integer
+          default: 0
+        total_cost:
+          type: number
+          default: 0.0
+
+    TokenUsageStats:
+      type: object
+      properties:
+        period:
+          type: string
+        total_input_tokens:
+          type: integer
+        total_output_tokens:
+          type: integer
+        total_cached_tokens:
+          type: integer
+        total_cost:
+          type: number
+        breakdown_by_model:
+          type: array
+          items:
+            $ref: "#/components/schemas/ModelBreakdown"
+
+    ModelBreakdown:
+      type: object
+      properties:
+        model:
+          type: string
+        input_tokens:
+          type: integer
+        output_tokens:
+          type: integer
+        cost:
+          type: number
+
+    DailyTokenUsage:
+      type: object
+      properties:
+        date:
+          type: string
+        input_tokens:
+          type: integer
+        output_tokens:
+          type: integer
+
+    CostByTeam:
+      type: object
+      properties:
+        team_id:
+          type: string
+        sessions:
+          type: integer
+        total_cost:
+          type: number
+        total_tokens:
+          type: integer
+
+    TopRouteResponse:
+      type: object
+      properties:
+        route_template:
+          type: string
+        method:
+          type: string
+        total_calls:
+          type: integer
+        unique_callers:
+          type: integer
+        avg_duration_ms:
+          type: number
+
+    TopCallerResponse:
+      type: object
+      properties:
+        caller_service:
+          type: string
+        call_count:
+          type: integer
+        routes_called:
+          type: integer
+
+    RouteCallResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+        caller_service:
+          type: string
+        route_template:
+          type: string
+        method:
+          type: string
+        status_code:
+          type: integer
+        duration_ms:
+          type: number
+        ts:
+          type: string
+          format: date-time
+
+    ContractCurrentResponse:
+      type: object
+      properties:
+        version_hash:
+          type: string
+        content:
+          type: object
+        captured_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    ContractChangeResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+        base_ref:
+          type: string
+          nullable: true
+        head_ref:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        is_breaking:
+          type: boolean
+        severity:
+          type: string
+        summary_json:
+          type: string
+        changed_routes_json:
+          type: string
+        changed_fields_json:
+          type: string
+          nullable: true
+        affected_services:
+          type: integer
+          default: 0
+        remediation_status:
+          type: string
+          default: pending
+
+    ContractChangeDetailResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+        base_ref:
+          type: string
+          nullable: true
+        head_ref:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        is_breaking:
+          type: boolean
+        severity:
+          type: string
+        summary_json:
+          type: string
+        changed_routes_json:
+          type: string
+        changed_fields_json:
+          type: string
+          nullable: true
+        impact_sets:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImpactSetResponse"
+        remediation_jobs:
+          type: array
+          items:
+            $ref: "#/components/schemas/RemediationJobResponse"
+
+    ImpactSetResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+        caller_service:
+          type: string
+        route_template:
+          type: string
+        calls_last_7d:
+          type: integer
+        confidence:
+          type: string
+        notes:
+          type: string
+          nullable: true
+
+    RemediationJobResponse:
+      type: object
+      properties:
+        job_id:
+          type: integer
+        target_repo:
+          type: string
+        status:
+          type: string
+        devin_run_id:
+          type: string
+          nullable: true
+        pr_url:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        bundle_hash:
+          type: string
+          nullable: true
+        error_summary:
+          type: string
+          nullable: true
+        audit_entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditLogEntry"
+
+    AuditLogEntry:
+      type: object
+      properties:
+        id:
+          type: integer
+        job_id:
+          type: integer
+        old_status:
+          type: string
+          nullable: true
+        new_status:
+          type: string
+        changed_at:
+          type: string
+          format: date-time
+        detail:
+          type: string
+          nullable: true

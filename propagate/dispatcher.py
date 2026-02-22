@@ -53,6 +53,28 @@ async def dispatch_remediation_jobs(
     print(f"\nDispatching {len(bundles)} Devin sessions (concurrency={guardrails.max_parallel})")
 
     async def dispatch_one(bundle: RepoFixBundle) -> RemediationJob:
+        # Validate guardrails: check client_paths against protected_paths
+        violations = guardrails.validate_paths(bundle.client_paths)
+        if violations:
+            logger.warning(
+                "Guardrail violation for %s: %s", bundle.target_service, violations
+            )
+            job = RemediationJob(
+                change_id=change_id,
+                target_repo=bundle.target_repo,
+                status=JobStatus.NEEDS_HUMAN.value,
+                bundle_hash=bundle.bundle_hash,
+                error_summary=f"Guardrail violation: {'; '.join(violations)}",
+            )
+            db.add(job)
+            await db.flush()
+            await _log_transition(
+                db, job, None, JobStatus.NEEDS_HUMAN.value,
+                f"Blocked by guardrail: {'; '.join(violations)}"
+            )
+            print(f"  [{bundle.target_service}] BLOCKED by guardrail: {violations}")
+            return job
+
         job = RemediationJob(
             change_id=change_id,
             target_repo=bundle.target_repo,

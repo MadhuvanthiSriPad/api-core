@@ -2,10 +2,15 @@
 
 Detects contract changes, maps impact via usage telemetry, and dispatches
 Devin to fix affected consumer repos.
+
+Usage:
+    python -m propagate              # Full run (requires DEVIN_API_KEY)
+    python -m propagate --dry-run    # Simulate full pipeline without Devin API
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import hashlib
 import json
@@ -25,6 +30,7 @@ from propagate.service_map import load_service_map
 from propagate.bundle import build_fix_bundles
 from propagate.dispatcher import dispatch_remediation_jobs
 from propagate.guardrails import load_guardrails
+from propagate.dependency_graph import build_dependency_graph_from_service_map
 
 from src.database import async_session, init_db
 from src.models.contract_snapshot import ContractSnapshot
@@ -35,9 +41,11 @@ from src.models.impact_set import ImpactSet
 CONTRACT_PATH = Path(__file__).resolve().parent.parent / "openapi.yaml"
 
 
-async def main():
+async def main(dry_run: bool = False):
     print("=" * 60)
     print("CONTRACT CHANGE PROPAGATION ENGINE")
+    if dry_run:
+        print("  ** DRY-RUN MODE — no Devin sessions will be created **")
     print("=" * 60)
 
     # Load guardrails and print config
@@ -156,11 +164,15 @@ async def main():
             await db.commit()
             return
 
-        # Step 4: Load service map
-        print("\n--- STEP 4: Loading service map ---")
+        # Step 4: Load service map and build dependency graph
+        print("\n--- STEP 4: Loading service map & dependency graph ---")
         svc_map = load_service_map()
         for name, info in svc_map.items():
-            print(f"  {name} → {info.repo}")
+            print(f"  {name} → {info.repo} (depends_on: {info.depends_on})")
+
+        dep_graph = build_dependency_graph_from_service_map(svc_map)
+        waves = dep_graph.topological_sort()
+        print(f"  Dependency waves: {waves}")
 
         # Step 5: Build fix bundles
         print("\n--- STEP 5: Building fix bundles ---")
@@ -171,9 +183,55 @@ async def main():
             print(f"    Calls (7d): {b.call_count_7d}")
             print(f"    Bundle hash: {b.bundle_hash}")
 
-        # Step 6: Dispatch Devin jobs
-        print("\n--- STEP 6: Dispatching Devin jobs ---")
-        jobs = await dispatch_remediation_jobs(db, bundles, guardrails, change.id)
+        # Step 6: Dispatch Devin jobs in dependency-aware waves
+        print("\n--- STEP 6: Dispatching Devin jobs (wave-ordered) ---")
+        jobs = []
+        bundle_by_service = {b.target_service: b for b in bundles}
+
+        if dry_run:
+            print("  [DRY-RUN] Simulating dispatch — no API calls will be made")
+            for wave_idx, wave_services in enumerate(waves):
+                wave_bundles = [
+                    bundle_by_service[svc]
+                    for svc in wave_services
+                    if svc in bundle_by_service
+                ]
+                if not wave_bundles:
+                    continue
+                print(f"\n  Wave {wave_idx}: {[b.target_service for b in wave_bundles]}")
+                for b in wave_bundles:
+                    violations = guardrails.validate_paths(b.client_paths)
+                    if violations:
+                        print(f"    [{b.target_service}] WOULD BE BLOCKED: {violations}")
+                    else:
+                        print(f"    [{b.target_service}] → {b.target_repo}")
+                        print(f"      Prompt length: {len(b.prompt)} chars")
+                        print(f"      Affected routes: {b.affected_routes}")
+                        print(f"      Total calls (7d): {b.call_count_7d}")
+
+            # Simulate check_status results
+            print("\n--- STEP 6b: Simulated check_status results ---")
+            statuses = ["green", "pr_opened", "ci_failed", "needs_human"]
+            for i, b in enumerate(bundles):
+                sim_status = statuses[i % len(statuses)]
+                merge_ok, merge_reason = guardrails.check_can_merge(sim_status == "green")
+                print(f"  [{b.target_service}] status={sim_status} | merge: {merge_reason}")
+
+            print(f"\n[DRY-RUN] Pipeline complete. {len(bundles)} bundle(s) would be dispatched.")
+        else:
+            for wave_idx, wave_services in enumerate(waves):
+                wave_bundles = [
+                    bundle_by_service[svc]
+                    for svc in wave_services
+                    if svc in bundle_by_service
+                ]
+                if not wave_bundles:
+                    continue
+                print(f"\n  Wave {wave_idx}: {[b.target_service for b in wave_bundles]}")
+                wave_jobs = await dispatch_remediation_jobs(
+                    db, wave_bundles, guardrails, change.id
+                )
+                jobs.extend(wave_jobs)
 
         # Step 7: Store new snapshot
         snapshot = ContractSnapshot(
@@ -185,8 +243,24 @@ async def main():
         await db.commit()
 
         print(f"\nNew contract snapshot stored: {new_hash}")
-        print(f"Propagation complete. {len(jobs)} job(s) dispatched.")
+        if dry_run:
+            print("Dry run complete. No Devin sessions were created.")
+        else:
+            print(f"Propagation complete. {len(jobs)} job(s) dispatched.")
+
+
+def cli():
+    parser = argparse.ArgumentParser(
+        description="Contract Change Propagation Engine"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Simulate the full pipeline without calling the Devin API",
+    )
+    args = parser.parse_args()
+    asyncio.run(main(dry_run=args.dry_run))
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    cli()

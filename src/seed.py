@@ -281,39 +281,39 @@ async def seed_contract_change_demo(db: AsyncSession):
     db.add(change)
     await db.flush()
 
-    # 2. Impact sets
+    # 2. Impact sets (route_template uses path-only format to match middleware/pipeline)
     impacts = [
         ImpactSet(
             change_id=change.id,
-            route_template="GET /api/v1/sessions",
+            route_template="/api/v1/sessions",
             caller_service="billing-service",
             calls_last_7d=312,
             confidence="high",
-            notes="Reads session list for invoice generation",
+            notes="GET — Reads session list for invoice generation",
         ),
         ImpactSet(
             change_id=change.id,
-            route_template="POST /api/v1/sessions",
+            route_template="/api/v1/sessions",
             caller_service="billing-service",
             calls_last_7d=245,
             confidence="high",
-            notes="Creates sessions on behalf of clients",
+            notes="POST — Creates sessions on behalf of clients",
         ),
         ImpactSet(
             change_id=change.id,
-            route_template="GET /api/v1/sessions",
+            route_template="/api/v1/sessions",
             caller_service="dashboard-service",
             calls_last_7d=487,
             confidence="high",
-            notes="Polls sessions for live display",
+            notes="GET — Polls sessions for live display",
         ),
         ImpactSet(
             change_id=change.id,
-            route_template="GET /api/v1/sessions/{session_id}",
+            route_template="/api/v1/sessions/{session_id}",
             caller_service="dashboard-service",
             calls_last_7d=156,
             confidence="medium",
-            notes="Fetches individual session detail",
+            notes="GET — Fetches individual session detail",
         ),
     ]
     for imp in impacts:

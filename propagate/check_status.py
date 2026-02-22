@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from propagate.devin_client import DevinClient
+from propagate.guardrails import load_guardrails
 from src.database import async_session
 from src.models.audit_log import AuditLog
 from src.models.remediation_job import RemediationJob, JobStatus
@@ -47,6 +48,7 @@ async def _log_transition(
 async def check_jobs(change_id: int | None = None) -> None:
     """Check Devin status for all running jobs, optionally filtered by change_id."""
     client = DevinClient()
+    guardrails = load_guardrails()
 
     async with async_session() as db:
         stmt = select(RemediationJob).where(
@@ -97,9 +99,24 @@ async def check_jobs(change_id: int | None = None) -> None:
             elif devin_status == "stopped":
                 old = job.status
                 if job.pr_url:
-                    job.status = JobStatus.GREEN.value
-                    await _log_transition(db, job, old, JobStatus.GREEN.value, f"PR: {job.pr_url}")
-                    print(f"  [{job.target_repo}] -> GREEN: {job.pr_url}")
+                    # Check CI status from structured output before marking GREEN
+                    ci_status = (structured_output or {}).get("ci_status", "unknown")
+                    ci_passed = ci_status in ("passed", "success")
+
+                    if guardrails.ci_required and not ci_passed and ci_status != "unknown":
+                        job.status = JobStatus.CI_FAILED.value
+                        job.error_summary = f"CI status: {ci_status}"
+                        await _log_transition(
+                            db, job, old, JobStatus.CI_FAILED.value,
+                            f"PR exists but CI failed ({ci_status}): {job.pr_url}",
+                        )
+                        print(f"  [{job.target_repo}] -> CI_FAILED ({ci_status}): {job.pr_url}")
+                    else:
+                        job.status = JobStatus.GREEN.value
+                        merge_ok, merge_reason = guardrails.check_can_merge(ci_passed)
+                        detail = f"PR: {job.pr_url} | merge: {merge_reason}"
+                        await _log_transition(db, job, old, JobStatus.GREEN.value, detail)
+                        print(f"  [{job.target_repo}] -> GREEN: {job.pr_url} ({merge_reason})")
                 else:
                     job.status = JobStatus.CI_FAILED.value
                     job.error_summary = "Devin stopped without PR"
