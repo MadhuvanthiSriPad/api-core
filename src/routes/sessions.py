@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.database import get_db
 from src.models.agent_session import AgentSession, SessionStatus
 from src.models.token_usage import TokenUsage
-from src.config import settings
+from src.config import settings, calculate_cost
 from src.schemas.sessions import (
     SessionCreate,
     SessionResponse,
@@ -165,7 +165,7 @@ async def update_session(
 
     # Recalculate cost if tokens changed
     if any(k in update_data for k in ("input_tokens", "output_tokens", "cached_tokens")):
-        session.total_cost = _calculate_cost(
+        session.total_cost = calculate_cost(
             session.input_tokens, session.output_tokens, session.cached_tokens
         )
 
@@ -194,7 +194,7 @@ async def record_token_usage(
     if not session:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
-    cost = _calculate_cost(input_tokens, output_tokens, cached_tokens)
+    cost = calculate_cost(input_tokens, output_tokens, cached_tokens)
 
     event = TokenUsage(
         session_id=session_id,
@@ -223,12 +223,3 @@ async def record_token_usage(
         cached_tokens=event.cached_tokens,
         cost=event.cost,
     )
-
-
-def _calculate_cost(input_tokens: int, output_tokens: int, cached_tokens: int) -> float:
-    cost = (
-        (input_tokens / 1000) * settings.input_token_price
-        + (output_tokens / 1000) * settings.output_token_price
-        + (cached_tokens / 1000) * settings.cached_token_price
-    )
-    return round(cost, 6)

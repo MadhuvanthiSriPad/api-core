@@ -1,7 +1,7 @@
 openapi: "3.1.0"
 info:
   title: API Core
-  description: Core API for AgentBoard — tracks AI sessions, token usage, and costs
+  description: Tracks AI sessions, token usage, costs, and contract management
   version: "2.0.0"
 
 servers:

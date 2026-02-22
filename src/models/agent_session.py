@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from sqlalchemy import String, DateTime, Float, Integer, ForeignKey, Text, Enum as SAEnum
+from sqlalchemy import String, DateTime, Float, Integer, ForeignKey, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 import enum
 

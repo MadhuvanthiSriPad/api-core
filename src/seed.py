@@ -17,7 +17,7 @@ from src.models.contract_change import ContractChange
 from src.models.impact_set import ImpactSet
 from src.models.remediation_job import RemediationJob, JobStatus
 from src.models.audit_log import AuditLog
-from src.config import settings
+from src.config import settings, calculate_cost
 
 TEAMS = [
     {"id": "team_eng", "name": "Engineering", "plan": "enterprise", "monthly_budget": 5000.0},
@@ -39,15 +39,6 @@ MODELS = [
 ]
 
 MODEL_WEIGHTS = [0.6, 0.3, 0.1]
-
-
-def _calculate_cost(input_tokens: int, output_tokens: int, cached_tokens: int) -> float:
-    return round(
-        (input_tokens / 1000) * settings.input_token_price
-        + (output_tokens / 1000) * settings.output_token_price
-        + (cached_tokens / 1000) * settings.cached_token_price,
-        6,
-    )
 
 
 async def seed_data(db: AsyncSession):
@@ -108,7 +99,7 @@ async def seed_data(db: AsyncSession):
             cached = int(base_input * random.uniform(0, 0.4))
             input_tokens = max(base_input - cached, 0)
             output_tokens = max(base_output, 0)
-            cost = _calculate_cost(input_tokens, output_tokens, cached)
+            cost = calculate_cost(input_tokens, output_tokens, cached)
 
             session_id = f"sess_{uuid.uuid4().hex[:16]}"
             error_msg = None
@@ -149,7 +140,7 @@ async def seed_data(db: AsyncSession):
                 evt_input = input_tokens // num_events + random.randint(-100, 100)
                 evt_output = output_tokens // num_events + random.randint(-50, 50)
                 evt_cached = cached // num_events
-                evt_cost = _calculate_cost(max(evt_input, 0), max(evt_output, 0), max(evt_cached, 0))
+                evt_cost = calculate_cost(max(evt_input, 0), max(evt_output, 0), max(evt_cached, 0))
 
                 event = TokenUsage(
                     session_id=session_id,

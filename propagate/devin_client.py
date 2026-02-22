@@ -2,25 +2,25 @@
 
 from __future__ import annotations
 
-import os
 import logging
 
 import httpx
 
-logger = logging.getLogger(__name__)
+from src.config import settings
 
-DEVIN_API_BASE = "https://api.devin.ai/v1"
+logger = logging.getLogger(__name__)
 
 
 class DevinClient:
     """Client for the Devin API — dispatches coding tasks and polls results."""
 
     def __init__(self, api_key: str | None = None):
-        self.api_key = api_key or os.getenv("DEVIN_API_KEY", "")
+        self.api_key = api_key or settings.devin_api_key
         if not self.api_key:
             raise ValueError(
                 "DEVIN_API_KEY is required. Set it as an environment variable."
             )
+        self.base_url = settings.devin_api_base
         self.headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -33,7 +33,7 @@ class DevinClient:
         """
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(
-                f"{DEVIN_API_BASE}/sessions",
+                f"{self.base_url}/sessions",
                 headers=self.headers,
                 json={"prompt": prompt},
             )
@@ -49,19 +49,8 @@ class DevinClient:
         """
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.get(
-                f"{DEVIN_API_BASE}/sessions/{session_id}",
+                f"{self.base_url}/sessions/{session_id}",
                 headers=self.headers,
-            )
-            resp.raise_for_status()
-            return resp.json()
-
-    async def send_message(self, session_id: str, message: str) -> dict:
-        """Send a follow-up message to a Devin session."""
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{DEVIN_API_BASE}/sessions/{session_id}/messages",
-                headers=self.headers,
-                json={"message": message},
             )
             resp.raise_for_status()
             return resp.json()

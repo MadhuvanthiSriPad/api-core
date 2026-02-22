@@ -1,0 +1,54 @@
+version: "3.8"
+
+services:
+  api-core:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      - API_CORE_DATABASE_URL=sqlite+aiosqlite:///./api_core.db
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  billing-service:
+    build:
+      context: ../billing-service
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8002"
+    environment:
+      - BILLING_GATEWAY_URL=http://api-core:8001
+      - BILLING_DATABASE_URL=sqlite+aiosqlite:///./billing.db
+    depends_on:
+      api-core:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  dashboard-service:
+    build:
+      context: ../dashboard-service
+      dockerfile: Dockerfile
+    ports:
+      - "8003:8003"
+    environment:
+      - DASHBOARD_GATEWAY_URL=http://api-core:8001
+      - DASHBOARD_BILLING_URL=http://billing-service:8002
+    depends_on:
+      api-core:
+        condition: service_healthy
+      billing-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
