@@ -1,6 +1,20 @@
 """Configuration for api-core."""
 
-from pydantic_settings import BaseSettings
+from __future__ import annotations
+
+try:
+    from pydantic_settings import BaseSettings
+
+    _USES_PYDANTIC_SETTINGS = True
+except ModuleNotFoundError:
+    # Compatibility fallback for environments where only pydantic is installed.
+    # pydantic v2 exposes v1 settings under pydantic.v1; v1 exposes BaseSettings directly.
+    try:
+        from pydantic.v1 import BaseSettings  # type: ignore[attr-defined]
+    except ImportError:
+        from pydantic import BaseSettings  # type: ignore[no-redef]
+
+    _USES_PYDANTIC_SETTINGS = False
 
 
 class Settings(BaseSettings):
@@ -19,7 +33,11 @@ class Settings(BaseSettings):
     devin_api_base: str = "https://api.devin.ai/v1"
     devin_app_base: str = "https://app.devin.ai"
 
-    model_config = {"env_prefix": "API_CORE_"}
+    if _USES_PYDANTIC_SETTINGS:
+        model_config = {"env_prefix": "API_CORE_"}
+    else:
+        class Config:
+            env_prefix = "API_CORE_"
 
 
 settings = Settings()
