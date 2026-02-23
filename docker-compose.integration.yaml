@@ -9,6 +9,7 @@ services:
       - "8001:8001"
     environment:
       - API_CORE_DATABASE_URL=sqlite+aiosqlite:///./api_core.db
+      - API_CORE_API_KEY=${API_CORE_API_KEY:-demo-api-key}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 5s
@@ -24,6 +25,7 @@ services:
     environment:
       - BILLING_GATEWAY_URL=http://api-core:8001
       - BILLING_DATABASE_URL=sqlite+aiosqlite:///./billing.db
+      - BILLING_API_CORE_API_KEY=${API_CORE_API_KEY:-demo-api-key}
     depends_on:
       api-core:
         condition: service_healthy
@@ -42,6 +44,7 @@ services:
     environment:
       - DASHBOARD_GATEWAY_URL=http://api-core:8001
       - DASHBOARD_BILLING_URL=http://billing-service:8002
+      - DASHBOARD_API_CORE_API_KEY=${API_CORE_API_KEY:-demo-api-key}
     depends_on:
       api-core:
         condition: service_healthy
