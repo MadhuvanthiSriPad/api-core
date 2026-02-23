@@ -377,7 +377,7 @@ async def seed_contract_change_demo(db: AsyncSession):
 
     jobs = []
     for spec in jobs_spec:
-        job = RemediationJob(change_id=change.id, **spec)
+        job = RemediationJob(change_id=change.id, is_dry_run=True, **spec)
         db.add(job)
         await db.flush()
         jobs.append(job)

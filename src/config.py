@@ -31,6 +31,7 @@ class Settings(BaseSettings):
 
     # CORS
     allowed_origins: str = "http://localhost:3000,http://localhost:5173"
+    api_key: str = ""
 
     # GitHub
     github_token: str = ""

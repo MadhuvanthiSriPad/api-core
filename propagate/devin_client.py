@@ -83,19 +83,31 @@ class DevinClient:
         # Should not reach here, but satisfy type checker
         raise last_exc  # type: ignore[misc]
 
-    async def create_session(self, prompt: str) -> dict:
+    async def create_session(self, prompt: str, idempotency_key: str | None = None) -> dict:
         """Create a new Devin session with a task prompt.
 
         Returns the session response including session_id.
         """
+        payload = {"prompt": prompt}
+        if idempotency_key:
+            payload["idempotency_key"] = idempotency_key
         resp = await self._request_with_retry(
             "post",
             f"{self.base_url}/sessions",
-            json={"prompt": prompt},
+            json=payload,
         )
         data = resp.json()
         logger.info("Devin session created: %s", data.get("session_id"))
         return data
+
+    async def send_message(self, session_id: str, message: str) -> dict:
+        """Send follow-up context to an existing Devin session."""
+        resp = await self._request_with_retry(
+            "post",
+            f"{self.base_url}/sessions/{session_id}/messages",
+            json={"message": message},
+        )
+        return resp.json()
 
     async def get_session(self, session_id: str) -> dict:
         """Poll the status of a Devin session.

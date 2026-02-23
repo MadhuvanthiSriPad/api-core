@@ -486,6 +486,8 @@ paths:
                   properties:
                     team_id:
                       type: string
+                    total_sessions:
+                      type: integer
                     session_count:
                       type: integer
                     total_cost:
@@ -713,6 +715,8 @@ components:
       properties:
         team_id:
           type: string
+        total_sessions:
+          type: integer
         sessions:
           type: integer
         total_cost:

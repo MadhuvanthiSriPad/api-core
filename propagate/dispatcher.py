@@ -19,6 +19,11 @@ from src.entities.audit_log import AuditLog
 logger = logging.getLogger(__name__)
 
 
+def _guardrail_target_paths(bundle: RepoFixBundle) -> list[str]:
+    """Return all path classes a remediation is expected to touch."""
+    return sorted(set(bundle.client_paths + bundle.test_paths + bundle.frontend_paths))
+
+
 async def _log_transition(
     db: AsyncSession,
     job: RemediationJob,
@@ -56,8 +61,8 @@ async def dispatch_remediation_jobs(
     async def dispatch_one(bundle: RepoFixBundle) -> RemediationJob:
         # Each coroutine gets its own session to avoid concurrent AsyncSession use
         async with async_session_factory() as own_db:
-            # Validate guardrails: check client_paths against protected_paths
-            violations = guardrails.validate_paths(bundle.client_paths)
+            # Validate guardrails against all declared target paths.
+            violations = guardrails.validate_paths(_guardrail_target_paths(bundle))
             if violations:
                 logger.warning(
                     "Guardrail violation for %s: %s", bundle.target_service, violations
@@ -96,7 +101,10 @@ async def dispatch_remediation_jobs(
                     await _log_transition(own_db, job, old, JobStatus.RUNNING.value, "Dispatching to Devin")
                     await own_db.flush()
 
-                    session = await client.create_session(bundle.prompt)
+                    session = await client.create_session(
+                        bundle.prompt,
+                        idempotency_key=bundle.bundle_hash,
+                    )
                     job.devin_run_id = session.get("session_id", "")
                     await own_db.flush()
 

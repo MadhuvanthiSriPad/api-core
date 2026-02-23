@@ -34,6 +34,7 @@ from propagate.dispatcher import dispatch_remediation_jobs
 from propagate.guardrails import load_guardrails
 from propagate.dependency_graph import build_dependency_graph_from_service_map
 from propagate.check_status import check_jobs, TERMINAL_STATUSES
+from propagate.devin_client import DevinClient
 
 from src.database import async_session, init_db
 from src.entities.contract_snapshot import ContractSnapshot
@@ -78,6 +79,60 @@ async def _wait_for_wave_completion(job_ids: list[int], wave_idx: int) -> bool:
 
     print(f"  Wave {wave_idx} timed out after {WAVE_MAX_POLLS} polls")
     return False
+
+
+async def _build_wave_context_message(job_ids: list[int], wave_idx: int) -> str | None:
+    """Create a short status summary that can be sent to the next wave."""
+    if not job_ids:
+        return None
+
+    from sqlalchemy import select
+
+    async with async_session() as db:
+        result = await db.execute(
+            select(RemediationJob).where(RemediationJob.job_id.in_(job_ids))
+        )
+        finished_jobs = list(result.scalars().all())
+
+    if not finished_jobs:
+        return None
+
+    parts = []
+    for job in finished_jobs:
+        repo_name = job.target_repo.rstrip("/").split("/")[-1] or job.target_repo
+        pr_segment = f" ({job.pr_url})" if job.pr_url else ""
+        parts.append(f"{repo_name}: {job.status.upper()}{pr_segment}")
+
+    return (
+        f"Wave {wave_idx} complete. "
+        f"Upstream remediation status: {'; '.join(parts)}. "
+        "Upstream contracts are now stable where CI is GREEN."
+    )
+
+
+async def _send_context_to_wave(
+    wave_jobs: list[RemediationJob],
+    wave_idx: int,
+    context_message: str | None,
+) -> None:
+    """Send prior-wave context to each newly-dispatched job in this wave."""
+    if not context_message:
+        return
+
+    session_ids = [job.devin_run_id for job in wave_jobs if job.devin_run_id]
+    if not session_ids:
+        return
+
+    client = DevinClient()
+    print(f"  Sending prior-wave context to wave {wave_idx} ({len(session_ids)} session(s))...")
+
+    async def send_one(session_id: str) -> None:
+        try:
+            await client.send_message(session_id, context_message)
+        except Exception as e:
+            print(f"    Context message failed for {session_id}: {e}")
+
+    await asyncio.gather(*(send_one(session_id) for session_id in session_ids))
 
 
 async def main(dry_run: bool = False, no_wait: bool = False, ci: bool = False):
@@ -257,7 +312,8 @@ async def main(dry_run: bool = False, no_wait: bool = False, ci: bool = False):
                     continue
                 print(f"\n  Wave {wave_idx}: {[b.target_service for b in wave_bundles]}")
                 for b in wave_bundles:
-                    violations = guardrails.validate_paths(b.client_paths)
+                    guardrail_paths = sorted(set(b.client_paths + b.test_paths + b.frontend_paths))
+                    violations = guardrails.validate_paths(guardrail_paths)
                     if violations:
                         print(f"    [{b.target_service}] WOULD BE BLOCKED: {violations}")
                         # Store blocked simulation result
@@ -279,7 +335,8 @@ async def main(dry_run: bool = False, no_wait: bool = False, ci: bool = False):
             # Simulate realistic randomized lifecycle
             print("\n--- STEP 6b: Simulated check_status lifecycle ---")
             for b in bundles:
-                violations = guardrails.validate_paths(b.client_paths)
+                guardrail_paths = sorted(set(b.client_paths + b.test_paths + b.frontend_paths))
+                violations = guardrails.validate_paths(guardrail_paths)
                 if violations:
                     continue
 
@@ -329,6 +386,7 @@ async def main(dry_run: bool = False, no_wait: bool = False, ci: bool = False):
             print(f"\n  Totals: {green} GREEN, {failed} CI_FAILED, {human} NEEDS_HUMAN")
             print(f"\n[DRY-RUN] Pipeline complete. {len(bundles)} bundle(s) simulated.")
         else:
+            next_wave_context: str | None = None
             for wave_idx, wave_services in enumerate(waves):
                 wave_bundles = [
                     bundle_by_service[svc]
@@ -343,14 +401,56 @@ async def main(dry_run: bool = False, no_wait: bool = False, ci: bool = False):
                 )
                 jobs.extend(wave_jobs)
 
-                # Wait for wave completion before proceeding to next wave
-                if not no_wait and wave_idx < len(waves) - 1:
+                # After upstream wave completion, send context to newly dispatched wave.
+                await _send_context_to_wave(
+                    wave_jobs=wave_jobs,
+                    wave_idx=wave_idx,
+                    context_message=next_wave_context,
+                )
+
+                # Wait for wave completion before proceeding (including the final wave)
+                if not no_wait:
                     dispatched_ids = [j.job_id for j in wave_jobs if j.devin_run_id]
                     if dispatched_ids:
-                        print(f"\n  Waiting for wave {wave_idx} to complete before starting wave {wave_idx + 1}...")
+                        next_label = f"wave {wave_idx + 1}" if wave_idx < len(waves) - 1 else "snapshot advancement"
+                        print(f"\n  Waiting for wave {wave_idx} to complete before {next_label}...")
                         await _wait_for_wave_completion(dispatched_ids, wave_idx)
+                        if wave_idx < len(waves) - 1:
+                            next_wave_context = await _build_wave_context_message(
+                                dispatched_ids, wave_idx
+                            )
 
-        # Step 7: Store new snapshot
+        # Step 7: Decide whether snapshot can advance.
+        should_store_snapshot = True
+        fail_pipeline = False
+
+        if dry_run:
+            should_store_snapshot = False
+            print("\n[DRY-RUN] Snapshot not advanced (simulation mode).")
+        elif no_wait:
+            should_store_snapshot = False
+            print("\n[NO-WAIT] Snapshot not advanced because jobs may still be running.")
+        elif jobs:
+            job_ids = [j.job_id for j in jobs]
+            result = await db.execute(
+                select(RemediationJob).where(RemediationJob.job_id.in_(job_ids))
+            )
+            fresh_jobs = result.scalars().all()
+            unresolved = [j for j in fresh_jobs if j.status in {"ci_failed", "needs_human"}]
+            if unresolved:
+                should_store_snapshot = False
+                fail_pipeline = True
+                print(f"\nWARNING: {len(unresolved)} job(s) in unresolved terminal state — snapshot NOT advanced.")
+                for j in unresolved:
+                    print(f"  [{j.target_repo}] status={j.status}: {j.error_summary or ''}")
+                print("Resolve these jobs before re-running. The same contract hash will re-trigger on next push.\n")
+
+        if not should_store_snapshot:
+            await db.commit()  # persist change/impact_sets/job records
+            if fail_pipeline:
+                sys.exit(1)
+            return
+
         snapshot = ContractSnapshot(
             version_hash=new_hash,
             content=new_content,

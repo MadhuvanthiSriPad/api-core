@@ -31,6 +31,8 @@ def _bundle(
     service="billing-service",
     repo="org/billing-service",
     client_paths=None,
+    test_paths=None,
+    frontend_paths=None,
 ):
     return RepoFixBundle(
         target_repo=repo,
@@ -40,8 +42,8 @@ def _bundle(
         affected_routes=["POST /api/v1/sessions"],
         call_count_7d=42,
         client_paths=client_paths or ["src/client.py"],
-        test_paths=["tests/test_client.py"],
-        frontend_paths=[],
+        test_paths=test_paths or ["tests/test_client.py"],
+        frontend_paths=frontend_paths or [],
         prompt="Fix the breaking change",
     )
 
@@ -51,6 +53,36 @@ class TestDispatchOne:
     async def test_guardrail_violation_sets_needs_human(self):
         """Bundles touching protected paths should be blocked with NEEDS_HUMAN."""
         bundle = _bundle(client_paths=["infra/main.tf"])
+        guardrails = Guardrails()
+
+        with patch("propagate.dispatcher.async_session_factory", TestSession), \
+             patch("propagate.dispatcher.DevinClient") as MockClient:
+            MockClient.return_value = MagicMock()
+            jobs = await dispatch_remediation_jobs([bundle], guardrails, change_id=1)
+
+        assert len(jobs) == 1
+        assert jobs[0].status == JobStatus.NEEDS_HUMAN.value
+        assert "Guardrail violation" in jobs[0].error_summary
+
+    @pytest.mark.asyncio
+    async def test_guardrail_violation_in_test_paths_sets_needs_human(self):
+        """Guardrails should apply to declared test paths too."""
+        bundle = _bundle(test_paths=[".github/workflows/ci.yaml"])
+        guardrails = Guardrails()
+
+        with patch("propagate.dispatcher.async_session_factory", TestSession), \
+             patch("propagate.dispatcher.DevinClient") as MockClient:
+            MockClient.return_value = MagicMock()
+            jobs = await dispatch_remediation_jobs([bundle], guardrails, change_id=1)
+
+        assert len(jobs) == 1
+        assert jobs[0].status == JobStatus.NEEDS_HUMAN.value
+        assert "Guardrail violation" in jobs[0].error_summary
+
+    @pytest.mark.asyncio
+    async def test_guardrail_violation_in_frontend_paths_sets_needs_human(self):
+        """Guardrails should apply to frontend path declarations."""
+        bundle = _bundle(frontend_paths=["terraform/modules/main.tf"])
         guardrails = Guardrails()
 
         with patch("propagate.dispatcher.async_session_factory", TestSession), \
@@ -78,6 +110,10 @@ class TestDispatchOne:
         assert len(jobs) == 1
         assert jobs[0].status == JobStatus.RUNNING.value
         assert jobs[0].devin_run_id == "devin_test_001"
+        mock_client.create_session.assert_awaited_once_with(
+            bundle.prompt,
+            idempotency_key=bundle.bundle_hash,
+        )
 
     @pytest.mark.asyncio
     async def test_dispatch_api_error_sets_needs_human(self):

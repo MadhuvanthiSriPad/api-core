@@ -7,6 +7,7 @@ from sqlalchemy import Boolean, String, DateTime, Text, Integer, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.database import Base
+from src.config import settings
 
 
 class JobStatus(str, enum.Enum):
@@ -42,3 +43,10 @@ class RemediationJob(Base):
 
     change = relationship("ContractChange", back_populates="remediation_jobs")
     audit_entries = relationship("AuditLog", back_populates="job", lazy="selectin")
+
+    @property
+    def devin_session_url(self) -> str | None:
+        """Convenience link for dashboard drill-down."""
+        if not self.devin_run_id:
+            return None
+        return f"{settings.devin_app_base}/sessions/{self.devin_run_id}"

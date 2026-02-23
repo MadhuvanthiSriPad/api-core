@@ -2,72 +2,79 @@ import React, { useState, useEffect } from "react";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000/api/v1";
 
-const MOCK_CHANGES = [
-  {
-    id: 1,
-    severity: "high",
-    is_breaking: true,
-    summary: "Added required 'priority' field to SessionCreate",
-    created_at: new Date().toISOString(),
-  },
-];
-
-function useMockData() {
-  return !import.meta.env.VITE_API_BASE;
-}
-
-function MockBanner() {
-  return (
-    <div
-      style={{
-        background: "#fff3cd",
-        border: "2px solid #ffc107",
-        color: "#856404",
-        padding: "12px 20px",
-        textAlign: "center",
-        fontWeight: "bold",
-        fontSize: "14px",
-      }}
-    >
-      MOCK DATA - Connect a live API by setting VITE_API_BASE
-    </div>
-  );
+function getSummary(change) {
+  if (!change || typeof change !== "object") return "n/a";
+  if (typeof change.summary === "string" && change.summary.trim()) return change.summary;
+  if (typeof change.summary_json !== "string" || !change.summary_json.trim()) return "n/a";
+  try {
+    const parsed = JSON.parse(change.summary_json);
+    return parsed?.summary || "n/a";
+  } catch {
+    return "n/a";
+  }
 }
 
 export default function App() {
-  const isMock = useMockData();
   const [changes, setChanges] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    if (isMock) {
-      setChanges(MOCK_CHANGES);
-      setLoading(false);
-      return;
+    let cancelled = false;
+
+    async function loadChanges() {
+      setLoading(true);
+      setError("");
+      try {
+        const response = await fetch(`${API_BASE}/contracts/changes`);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const data = await response.json();
+        if (!Array.isArray(data)) {
+          throw new Error("Unexpected response payload");
+        }
+        if (!cancelled) {
+          setChanges(data);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          const message = err instanceof Error ? err.message : "Unknown error";
+          setChanges([]);
+          setError(`Failed to load live contract changes from ${API_BASE}: ${message}`);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
     }
 
-    fetch(`${API_BASE}/contracts/changes`)
-      .then((r) => r.json())
-      .then(setChanges)
-      .catch(() => {
-        setChanges(MOCK_CHANGES);
-      })
-      .finally(() => setLoading(false));
-  }, [isMock]);
+    loadChanges();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <div style={{ fontFamily: "system-ui, sans-serif", maxWidth: 800, margin: "0 auto", padding: 20 }}>
-      {isMock && <MockBanner />}
       <h1>Contract Propagation Dashboard</h1>
+      <p style={{ color: "#555", marginTop: 0 }}>Data source: {API_BASE}</p>
       {loading ? (
         <p>Loading...</p>
+      ) : error ? (
+        <p style={{ color: "#b91c1c", fontWeight: 600 }}>{error}</p>
+      ) : changes.length === 0 ? (
+        <p>No contract changes found yet. Run a real propagation to populate this view.</p>
       ) : (
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr>
               <th style={{ textAlign: "left", borderBottom: "2px solid #ddd", padding: 8 }}>ID</th>
+              <th style={{ textAlign: "left", borderBottom: "2px solid #ddd", padding: 8 }}>Created</th>
               <th style={{ textAlign: "left", borderBottom: "2px solid #ddd", padding: 8 }}>Severity</th>
               <th style={{ textAlign: "left", borderBottom: "2px solid #ddd", padding: 8 }}>Breaking</th>
+              <th style={{ textAlign: "left", borderBottom: "2px solid #ddd", padding: 8 }}>Status</th>
               <th style={{ textAlign: "left", borderBottom: "2px solid #ddd", padding: 8 }}>Summary</th>
             </tr>
           </thead>
@@ -75,9 +82,13 @@ export default function App() {
             {changes.map((c) => (
               <tr key={c.id}>
                 <td style={{ padding: 8, borderBottom: "1px solid #eee" }}>{c.id}</td>
+                <td style={{ padding: 8, borderBottom: "1px solid #eee" }}>
+                  {c.created_at ? new Date(c.created_at).toLocaleString() : "n/a"}
+                </td>
                 <td style={{ padding: 8, borderBottom: "1px solid #eee" }}>{c.severity}</td>
                 <td style={{ padding: 8, borderBottom: "1px solid #eee" }}>{c.is_breaking ? "Yes" : "No"}</td>
-                <td style={{ padding: 8, borderBottom: "1px solid #eee" }}>{c.summary}</td>
+                <td style={{ padding: 8, borderBottom: "1px solid #eee" }}>{c.remediation_status || "pending"}</td>
+                <td style={{ padding: 8, borderBottom: "1px solid #eee" }}>{getSummary(c)}</td>
               </tr>
             ))}
           </tbody>

@@ -39,11 +39,13 @@ class RemediationJobResponse(BaseModel):
     target_repo: str
     status: str
     devin_run_id: str | None = None
+    devin_session_url: str | None = None
     pr_url: str | None = None
     created_at: datetime
     updated_at: datetime
     bundle_hash: str | None = None
     error_summary: str | None = None
+    is_dry_run: bool = False
     audit_entries: list[AuditLogEntry] = []
 
     model_config = {"from_attributes": True}

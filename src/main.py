@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.config import settings
 from src.database import init_db
+from src.middleware.api_key_auth import ApiKeyAuthMiddleware
 from src.middleware.usage_telemetry import UsageTelemetryMiddleware
 from src.routes import sessions, teams, analytics, usage, contracts, invoices
 
@@ -32,6 +33,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(ApiKeyAuthMiddleware)
 app.add_middleware(UsageTelemetryMiddleware)
 
 app.include_router(sessions.router, prefix=settings.api_prefix)

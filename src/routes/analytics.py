@@ -119,7 +119,7 @@ async def get_cost_by_team(
     result = await db.execute(
         select(
             AgentSession.team_id,
-            func.count(AgentSession.session_id).label("sessions"),
+            func.count(AgentSession.session_id).label("total_sessions"),
             func.coalesce(func.sum(AgentSession.total_cost), 0.0).label("cost"),
             func.coalesce(func.sum(
                 AgentSession.input_tokens + AgentSession.output_tokens
@@ -133,7 +133,10 @@ async def get_cost_by_team(
     return [
         {
             "team_id": r.team_id,
-            "sessions": r.sessions,
+            # Preserve the previous "sessions" key while providing
+            # the contract expected by billing-service ("total_sessions").
+            "total_sessions": int(r.total_sessions),
+            "sessions": int(r.total_sessions),
             "total_cost": round(float(r.cost), 4),
             "total_tokens": int(r.tokens),
         }

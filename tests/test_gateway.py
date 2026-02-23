@@ -171,3 +171,42 @@ class TestTeams:
         resp = await client.get("/api/v1/teams/team_test")
         assert resp.status_code == 200
         assert resp.json()["name"] == "Test Team"
+
+
+class TestAnalytics:
+    @pytest.mark.asyncio
+    async def test_cost_by_team_includes_total_sessions(self, client, seed_team):
+        await client.post("/api/v1/sessions", json={
+            "team_id": "team_test",
+            "agent_name": "analytics-agent",
+            "priority": "medium",
+        })
+        resp = await client.get("/api/v1/analytics/cost-by-team")
+        assert resp.status_code == 200
+        rows = resp.json()
+        assert len(rows) == 1
+        assert rows[0]["team_id"] == "team_test"
+        assert rows[0]["total_sessions"] == 1
+        # Backward-compatible alias retained for existing consumers.
+        assert rows[0]["sessions"] == 1
+
+
+class TestApiKeyAuth:
+    @pytest.mark.asyncio
+    async def test_requires_api_key_when_configured(self, client, monkeypatch):
+        from src.config import settings
+
+        monkeypatch.setattr(settings, "api_key", "test-secret")
+        denied = await client.get("/api/v1/sessions")
+        assert denied.status_code == 401
+
+        allowed = await client.get("/api/v1/sessions", headers={"X-API-Key": "test-secret"})
+        assert allowed.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_health_is_exempt_from_api_key(self, client, monkeypatch):
+        from src.config import settings
+
+        monkeypatch.setattr(settings, "api_key", "test-secret")
+        resp = await client.get("/health")
+        assert resp.status_code == 200

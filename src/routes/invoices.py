@@ -41,7 +41,10 @@ async def get_team_summary(
     return [
         {
             "team_id": r.team_id,
-            "session_count": r.session_count,
+            # Keep session_count for backward compatibility while exposing
+            # the canonical total_sessions field consumed by billing-service.
+            "total_sessions": int(r.session_count),
+            "session_count": int(r.session_count),
             "total_cost": round(float(r.total_cost), 4),
             "total_input_tokens": int(r.total_input_tokens),
             "total_output_tokens": int(r.total_output_tokens),
