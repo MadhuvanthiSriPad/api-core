@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 
 from src.database import Base, get_db
 from src.main import app
-from src.models import AgentSession, TokenUsage, Team
+from src.entities import AgentSession, TokenUsage, Team
 
 
 # Use SQLite for tests
@@ -61,7 +61,7 @@ class TestSessions:
         resp = await client.post("/api/v1/sessions", json={
             "team_id": "team_test",
             "agent_name": "code-reviewer",
-            "model": "gpt-4o",
+            "model": "devin-default",
             "priority": "high",
         })
         assert resp.status_code == 201

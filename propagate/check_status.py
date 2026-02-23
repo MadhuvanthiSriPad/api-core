@@ -20,8 +20,8 @@ from propagate.devin_client import DevinClient
 from propagate.guardrails import load_guardrails
 from src.config import settings
 from src.database import async_session
-from src.models.audit_log import AuditLog
-from src.models.remediation_job import RemediationJob, JobStatus
+from src.entities.audit_log import AuditLog
+from src.entities.remediation_job import RemediationJob, JobStatus
 
 logger = logging.getLogger(__name__)
 

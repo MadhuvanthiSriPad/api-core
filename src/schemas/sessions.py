@@ -17,7 +17,7 @@ class PriorityEnum(str, enum.Enum):
 class SessionCreate(BaseModel):
     team_id: str
     agent_name: str
-    model: str = "gpt-4o"
+    model: str = "devin-default"
     priority: PriorityEnum
     prompt: str | None = None
     tags: str | None = None

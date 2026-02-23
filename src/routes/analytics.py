@@ -9,8 +9,8 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
-from src.models.token_usage import TokenUsage
-from src.models.agent_session import AgentSession
+from src.entities.token_usage import TokenUsage
+from src.entities.agent_session import AgentSession
 from src.schemas.sessions import TokenUsageStats
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])

@@ -9,14 +9,14 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.models.team import Team
-from src.models.agent_session import AgentSession, SessionStatus
-from src.models.token_usage import TokenUsage
-from src.models.usage_request import UsageRequest
-from src.models.contract_change import ContractChange
-from src.models.impact_set import ImpactSet
-from src.models.remediation_job import RemediationJob, JobStatus
-from src.models.audit_log import AuditLog
+from src.entities.team import Team
+from src.entities.agent_session import AgentSession, SessionStatus
+from src.entities.token_usage import TokenUsage
+from src.entities.usage_request import UsageRequest
+from src.entities.contract_change import ContractChange
+from src.entities.impact_set import ImpactSet
+from src.entities.remediation_job import RemediationJob, JobStatus
+from src.entities.audit_log import AuditLog
 from src.config import settings, calculate_cost
 
 TEAMS = [
@@ -33,9 +33,9 @@ AGENTS = [
 ]
 
 MODELS = [
-    "gpt-4o",
-    "gpt-4o-mini",
-    "o1-preview",
+    "devin-default",
+    "devin-fast",
+    "devin-reasoning",
 ]
 
 MODEL_WEIGHTS = [0.6, 0.3, 0.1]

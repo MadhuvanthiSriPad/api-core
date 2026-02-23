@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, patch, MagicMock
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 from src.database import Base
-from src.models.remediation_job import RemediationJob, JobStatus
-from src.models.audit_log import AuditLog
+from src.entities.remediation_job import RemediationJob, JobStatus
+from src.entities.audit_log import AuditLog
 from propagate.bundle import RepoFixBundle
 from propagate.guardrails import Guardrails
 from propagate.dispatcher import dispatch_remediation_jobs

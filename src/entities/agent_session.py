@@ -23,7 +23,7 @@ class AgentSession(Base):
     session_id: Mapped[str] = mapped_column(String(100), primary_key=True)
     team_id: Mapped[str] = mapped_column(String(50), ForeignKey("teams.id"), nullable=False)
     agent_name: Mapped[str] = mapped_column(String(200), nullable=False)
-    model: Mapped[str] = mapped_column(String(100), nullable=False)  # e.g. "gpt-4o"
+    model: Mapped[str] = mapped_column(String(100), nullable=False)  # e.g. "devin-default"
     status: Mapped[str] = mapped_column(String(20), default=SessionStatus.RUNNING.value)
     priority: Mapped[str] = mapped_column(String(20), nullable=True)
     prompt: Mapped[str] = mapped_column(Text, nullable=True)

@@ -7,8 +7,8 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
-from src.models.team import Team
-from src.models.agent_session import AgentSession
+from src.entities.team import Team
+from src.entities.agent_session import AgentSession
 from src.schemas.sessions import TeamResponse
 
 router = APIRouter(prefix="/teams", tags=["teams"])

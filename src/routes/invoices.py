@@ -9,7 +9,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
-from src.models.agent_session import AgentSession
+from src.entities.agent_session import AgentSession
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
 

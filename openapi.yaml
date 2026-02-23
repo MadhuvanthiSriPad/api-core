@@ -510,7 +510,7 @@ components:
           type: string
         model:
           type: string
-          default: "gpt-4o"
+          default: "devin-default"
         priority:
           type: string
           enum:

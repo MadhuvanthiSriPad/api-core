@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.models.usage_request import UsageRequest
+from src.entities.usage_request import UsageRequest
 
 
 @dataclass

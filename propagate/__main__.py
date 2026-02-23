@@ -36,10 +36,10 @@ from propagate.dependency_graph import build_dependency_graph_from_service_map
 from propagate.check_status import check_jobs, TERMINAL_STATUSES
 
 from src.database import async_session, init_db
-from src.models.contract_snapshot import ContractSnapshot
-from src.models.contract_change import ContractChange
-from src.models.impact_set import ImpactSet
-from src.models.remediation_job import RemediationJob
+from src.entities.contract_snapshot import ContractSnapshot
+from src.entities.contract_change import ContractChange
+from src.entities.impact_set import ImpactSet
+from src.entities.remediation_job import RemediationJob
 
 
 CONTRACT_PATH = Path(__file__).resolve().parent.parent / "openapi.yaml"

@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.database import async_session, init_db
-from src.models.usage_request import UsageRequest
+from src.entities.usage_request import UsageRequest
 
 
 async def seed_telemetry():

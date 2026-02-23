@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 from src.database import Base
-from src.models.usage_request import UsageRequest
+from src.entities.usage_request import UsageRequest
 from propagate.impact import compute_impact_sets
 
 

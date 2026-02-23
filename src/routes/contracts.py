@@ -13,9 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.database import get_db
-from src.models.contract_change import ContractChange
-from src.models.impact_set import ImpactSet
-from src.models.remediation_job import RemediationJob
+from src.entities.contract_change import ContractChange
+from src.entities.impact_set import ImpactSet
+from src.entities.remediation_job import RemediationJob
 from src.schemas.contracts import (
     ContractCurrentResponse,
     ContractChangeResponse,

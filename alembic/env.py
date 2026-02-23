@@ -15,16 +15,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.database import Base
 
 # Import all models so they register with Base.metadata
-from src.models.agent_session import AgentSession  # noqa: F401
-from src.models.token_usage import TokenUsage  # noqa: F401
-from src.models.team import Team  # noqa: F401
-from src.models.usage_request import UsageRequest  # noqa: F401
-from src.models.contract_snapshot import ContractSnapshot  # noqa: F401
-from src.models.contract_change import ContractChange  # noqa: F401
-from src.models.impact_set import ImpactSet  # noqa: F401
-from src.models.remediation_job import RemediationJob  # noqa: F401
-from src.models.audit_log import AuditLog  # noqa: F401
-from src.models.service_dependency import ServiceDependency  # noqa: F401
+from src.entities.agent_session import AgentSession  # noqa: F401
+from src.entities.token_usage import TokenUsage  # noqa: F401
+from src.entities.team import Team  # noqa: F401
+from src.entities.usage_request import UsageRequest  # noqa: F401
+from src.entities.contract_snapshot import ContractSnapshot  # noqa: F401
+from src.entities.contract_change import ContractChange  # noqa: F401
+from src.entities.impact_set import ImpactSet  # noqa: F401
+from src.entities.remediation_job import RemediationJob  # noqa: F401
+from src.entities.audit_log import AuditLog  # noqa: F401
+from src.entities.service_dependency import ServiceDependency  # noqa: F401
 
 config = context.config
 

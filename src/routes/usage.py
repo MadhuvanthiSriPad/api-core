@@ -9,7 +9,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
-from src.models.usage_request import UsageRequest
+from src.entities.usage_request import UsageRequest
 from src.schemas.usage import TopRouteResponse, TopCallerResponse, RouteCallResponse
 
 router = APIRouter(prefix="/usage", tags=["usage"])

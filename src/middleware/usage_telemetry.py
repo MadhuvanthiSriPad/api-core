@@ -8,7 +8,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from src.database import async_session
-from src.models.usage_request import UsageRequest
+from src.entities.usage_request import UsageRequest
 
 logger = logging.getLogger(__name__)
 

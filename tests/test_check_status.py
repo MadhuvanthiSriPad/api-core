@@ -8,8 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 from src.database import Base
-from src.models.remediation_job import RemediationJob, JobStatus
-from src.models.audit_log import AuditLog
+from src.entities.remediation_job import RemediationJob, JobStatus
+from src.entities.audit_log import AuditLog
 from propagate.check_status import check_jobs, CI_UNKNOWN_MAX_ATTEMPTS
 
 
