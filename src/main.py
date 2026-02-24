@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.config import settings
-from src.database import init_db
+from src.database import init_db, close_db
 from src.middleware.api_key_auth import ApiKeyAuthMiddleware
 from src.middleware.usage_telemetry import UsageTelemetryMiddleware
 from src.routes import sessions, teams, analytics, usage, contracts, invoices
@@ -17,7 +17,10 @@ from src.routes import sessions, teams, analytics, usage, contracts, invoices
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
-    yield
+    try:
+        yield
+    finally:
+        await close_db()
 
 
 app = FastAPI(

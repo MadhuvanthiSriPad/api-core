@@ -32,6 +32,12 @@ async def setup_db():
         await conn.run_sync(Base.metadata.drop_all)
 
 
+@pytest_asyncio.fixture(scope="session", autouse=True)
+async def dispose_test_engine():
+    yield
+    await test_engine.dispose()
+
+
 @pytest_asyncio.fixture
 async def seed_team():
     async with TestSession() as db:

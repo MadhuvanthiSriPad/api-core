@@ -26,6 +26,12 @@ async def setup_db():
         await conn.run_sync(Base.metadata.drop_all)
 
 
+@pytest_asyncio.fixture(scope="session", autouse=True)
+async def dispose_test_engine():
+    yield
+    await test_engine.dispose()
+
+
 async def _create_job(status=JobStatus.RUNNING.value, devin_run_id="devin_123", pr_url=None):
     async with TestSession() as db:
         job = RemediationJob(

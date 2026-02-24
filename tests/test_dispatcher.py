@@ -27,6 +27,12 @@ async def setup_db():
         await conn.run_sync(Base.metadata.drop_all)
 
 
+@pytest_asyncio.fixture(scope="session", autouse=True)
+async def dispose_test_engine():
+    yield
+    await test_engine.dispose()
+
+
 def _bundle(
     service="billing-service",
     repo="org/billing-service",

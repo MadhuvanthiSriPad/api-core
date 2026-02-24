@@ -60,3 +60,7 @@ async def init_db():
         from alembic import command
         alembic_cfg = Config("alembic.ini")
         command.upgrade(alembic_cfg, "head")
+
+
+async def close_db() -> None:
+    await engine.dispose()
