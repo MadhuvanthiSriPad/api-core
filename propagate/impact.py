@@ -17,6 +17,7 @@ class ImpactRecord:
     route_template: str
     method: str
     calls_last_7d: int
+    declared_only: bool = False
 
 
 async def compute_impact_sets(
@@ -78,13 +79,27 @@ async def compute_impact_sets(
     all_services = set(declared_dependents or set()) | telemetry_services
 
     impacts: list[ImpactRecord] = []
-    for svc in sorted(all_services):
-        for method, route_template in route_filters:
-            impacts.append(ImpactRecord(
-                caller_service=svc,
-                route_template=route_template,
-                method=method,
-                calls_last_7d=telemetry.get((svc, method, route_template), 0),
-            ))
+    seen_services: set[str] = set()
+
+    # Include all (service, route) combos with actual telemetry
+    for (svc, method, route_template), count in sorted(telemetry.items()):
+        impacts.append(ImpactRecord(
+            caller_service=svc,
+            route_template=route_template,
+            method=method,
+            calls_last_7d=count,
+        ))
+        seen_services.add(svc)
+
+    # Ensure every declared dependent appears at least once
+    for svc in sorted((declared_dependents or set()) - seen_services):
+        method, route_template = route_filters[0]
+        impacts.append(ImpactRecord(
+            caller_service=svc,
+            route_template=route_template,
+            method=method,
+            calls_last_7d=0,
+            declared_only=True,
+        ))
 
     return impacts

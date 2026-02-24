@@ -122,7 +122,7 @@ async def get_cost_by_team(
             func.count(AgentSession.session_id).label("total_sessions"),
             func.coalesce(func.sum(AgentSession.total_cost), 0.0).label("cost"),
             func.coalesce(func.sum(
-                AgentSession.input_tokens + AgentSession.output_tokens
+                AgentSession.input_tokens + AgentSession.output_tokens + AgentSession.cached_tokens
             ), 0).label("tokens"),
         )
         .where(AgentSession.started_at >= since)

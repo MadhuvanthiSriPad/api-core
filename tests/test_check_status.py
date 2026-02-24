@@ -112,7 +112,8 @@ class TestCheckJobs:
 
         with patch("propagate.check_status.async_session", TestSession), \
              patch("propagate.check_status.DevinClient", return_value=mock_client), \
-             patch("propagate.check_status._fetch_github_ci_status", return_value=(False, "unknown")):
+             patch("propagate.check_status._fetch_github_ci_status", return_value=(False, "unknown")), \
+             patch("propagate.check_status._fetch_pr_changed_files", return_value=["src/client.py"]):
             await check_jobs()
 
         async with TestSession() as db:

@@ -31,6 +31,7 @@ class RepoFixBundle:
                 "repo": self.target_repo,
                 "summary": self.change_summary,
                 "routes": self.affected_routes,
+                "breaking_changes": self.breaking_changes,
             }, sort_keys=True)
             self.bundle_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
 

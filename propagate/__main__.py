@@ -256,7 +256,10 @@ async def main(dry_run: bool = False, no_wait: bool = False, ci: bool = False):
         # Telemetry enriches call counts but does not gate inclusion.
         print("\n--- STEP 3: Impact mapping ---")
         svc_map = load_service_map()
-        declared_dependents = set(svc_map.keys())
+        declared_dependents = {
+            name for name, info in svc_map.items()
+            if "api-core" in info.depends_on
+        }
         impacts = await compute_impact_sets(
             db, classified.changed_routes, declared_dependents
         )

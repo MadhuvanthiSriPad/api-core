@@ -23,6 +23,10 @@ async def override_get_db():
 
 app.dependency_overrides[get_db] = override_get_db
 
+# Enable debug mode so auth middleware allows requests without API key
+from src.config import settings
+settings.debug = True
+
 
 @pytest_asyncio.fixture(autouse=True)
 async def setup_db():

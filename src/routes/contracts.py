@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
+from collections.abc import Iterable
 from pathlib import Path
 
 import yaml
@@ -27,7 +29,34 @@ from src.schemas.contracts import (
 
 router = APIRouter(prefix="/contracts", tags=["contracts"])
 
+_SYNC_COOLDOWN = 30  # seconds between sync calls
+_last_sync_time: float = 0.0
+
 CONTRACT_PATH = Path(__file__).resolve().parent.parent.parent / "openapi.yaml"
+
+
+def _dedupe_jobs_by_repo(jobs: Iterable[RemediationJob]) -> list[RemediationJob]:
+    """Return latest remediation job per target repo."""
+    by_repo: dict[str, RemediationJob] = {}
+    # Latest updates should win.
+    ordered = sorted(
+        jobs,
+        key=lambda job: job.updated_at or job.created_at,
+        reverse=True,
+    )
+    for job in ordered:
+        repo_key = job.target_repo or f"job-{job.job_id}"
+        if repo_key not in by_repo:
+            by_repo[repo_key] = job
+    return sorted(
+        by_repo.values(),
+        key=lambda job: (job.target_repo or "", job.updated_at or job.created_at),
+        reverse=False,
+    )
+
+
+def _service_name_from_repo(repo_url: str) -> str:
+    return repo_url.rstrip("/").split("/")[-1]
 
 
 @router.get("/current", response_model=ContractCurrentResponse)
@@ -65,11 +94,17 @@ async def list_changes(
 
     response = []
     for change in changes:
-        unique_services = sorted({imp.caller_service for imp in change.impact_sets})
-        jobs = change.remediation_jobs
+        jobs = _dedupe_jobs_by_repo(change.remediation_jobs)
+        unique_services = {imp.caller_service for imp in change.impact_sets}
+        unique_services.update(
+            _service_name_from_repo(job.target_repo)
+            for job in jobs
+            if job.target_repo
+        )
+        unique_services_list = sorted(unique_services)
         target_repos = sorted({j.target_repo for j in jobs if j.target_repo})
         active_jobs = sum(1 for j in jobs if j.status in {"queued", "running", "pr_opened"})
-        pr_count = sum(1 for j in jobs if j.pr_url)
+        pr_count = len({j.pr_url for j in jobs if j.pr_url})
         if not jobs:
             rem_status = "pending"
         elif all(j.status == "green" for j in jobs):
@@ -78,6 +113,15 @@ async def list_changes(
             rem_status = "needs_human"
         else:
             rem_status = "in_progress"
+
+        # Business value metrics: ~2-4 eng-hours per affected service
+        n_services = len(unique_services_list)
+        hours_saved = round(n_services * 2.5, 1) if jobs else 0.0
+        risk = "critical" if change.is_breaking and n_services >= 3 else (
+            "high" if change.is_breaking else (
+                "medium" if n_services >= 2 else "low"
+            )
+        )
 
         response.append(ContractChangeResponse(
             id=change.id,
@@ -89,13 +133,15 @@ async def list_changes(
             summary_json=change.summary_json,
             changed_routes_json=change.changed_routes_json,
             changed_fields_json=change.changed_fields_json,
-            affected_services=len(unique_services),
-            impacted_services=unique_services,
+            affected_services=len(unique_services_list),
+            impacted_services=unique_services_list,
             target_repos=target_repos,
             source_repo="api-core",
             active_jobs=active_jobs,
             pr_count=pr_count,
             remediation_status=rem_status,
+            estimated_hours_saved=hours_saved,
+            incident_risk_score=risk,
         ))
     return response
 
@@ -107,6 +153,12 @@ async def sync_live_jobs(
     db: AsyncSession = Depends(get_db),
 ):
     """Manually sync Devin sessions into remediation jobs for dashboard fallback."""
+    global _last_sync_time
+    now = time.monotonic()
+    if now - _last_sync_time < _SYNC_COOLDOWN:
+        remaining = int(_SYNC_COOLDOWN - (now - _last_sync_time))
+        raise HTTPException(status_code=429, detail=f"Sync cooldown: retry in {remaining}s")
+    _last_sync_time = now
     return await sync_devin_sessions(
         db=db,
         limit=limit,
@@ -132,6 +184,8 @@ async def get_change_detail(
     if not change:
         raise HTTPException(status_code=404, detail=f"Change {change_id} not found")
 
+    jobs = _dedupe_jobs_by_repo(change.remediation_jobs)
+
     return ContractChangeDetailResponse(
         id=change.id,
         base_ref=change.base_ref,
@@ -143,5 +197,5 @@ async def get_change_detail(
         changed_routes_json=change.changed_routes_json,
         changed_fields_json=change.changed_fields_json,
         impact_sets=[ImpactSetResponse.model_validate(imp) for imp in change.impact_sets],
-        remediation_jobs=[RemediationJobResponse.model_validate(job) for job in change.remediation_jobs],
+        remediation_jobs=[RemediationJobResponse.model_validate(job) for job in jobs],
     )

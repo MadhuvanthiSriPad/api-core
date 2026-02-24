@@ -189,8 +189,7 @@ class TestComputeImpactSets:
             "POST /api/v1/sessions",
             "GET /api/v1/teams",
         ])
-        # 2 services × 2 routes = 4 records; each service is surfaced for all
-        # changed routes regardless of which specific route they called.
-        assert len(impacts) == 4
+        # Each service appears only for routes it actually called (no cartesian).
+        assert len(impacts) == 2
         callers = {i.caller_service for i in impacts}
         assert callers == {"svc-a", "svc-b"}

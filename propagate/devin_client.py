@@ -33,6 +33,10 @@ class DevinClient:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        self._client = httpx.AsyncClient(timeout=60.0)
+
+    async def close(self):
+        await self._client.aclose()
 
     async def _request_with_retry(
         self,
@@ -44,28 +48,27 @@ class DevinClient:
         last_exc: Exception | None = None
         for attempt in range(_MAX_RETRIES + 1):
             try:
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    resp = await getattr(client, method)(
-                        url, headers=self.headers, **kwargs
+                resp = await getattr(self._client, method)(
+                    url, headers=self.headers, **kwargs
+                )
+                if resp.status_code in _RETRYABLE_STATUS_CODES and attempt < _MAX_RETRIES:
+                    delay = _BASE_DELAY * (2 ** attempt)
+                    logger.warning(
+                        "Retryable %d from %s %s, retrying in %.1fs (attempt %d/%d)",
+                        resp.status_code, method.upper(), url,
+                        delay, attempt + 1, _MAX_RETRIES,
                     )
-                    if resp.status_code in _RETRYABLE_STATUS_CODES and attempt < _MAX_RETRIES:
-                        delay = _BASE_DELAY * (2 ** attempt)
-                        logger.warning(
-                            "Retryable %d from %s %s, retrying in %.1fs (attempt %d/%d)",
-                            resp.status_code, method.upper(), url,
-                            delay, attempt + 1, _MAX_RETRIES,
-                        )
-                        await asyncio.sleep(delay)
-                        continue
-                    if resp.status_code in (401, 403):
-                        raise httpx.HTTPStatusError(
-                            f"Authentication failed ({resp.status_code}) for {method.upper()} {url}. "
-                            f"Check that API_CORE_DEVIN_API_KEY is set correctly.",
-                            request=resp.request,
-                            response=resp,
-                        )
-                    resp.raise_for_status()
-                    return resp
+                    await asyncio.sleep(delay)
+                    continue
+                if resp.status_code in (401, 403):
+                    raise httpx.HTTPStatusError(
+                        f"Authentication failed ({resp.status_code}) for {method.upper()} {url}. "
+                        f"Check that API_CORE_DEVIN_API_KEY is set correctly.",
+                        request=resp.request,
+                        response=resp,
+                    )
+                resp.raise_for_status()
+                return resp
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
                 last_exc = exc
                 if attempt < _MAX_RETRIES:

@@ -68,6 +68,8 @@ class ContractChangeResponse(BaseModel):
     active_jobs: int = 0
     pr_count: int = 0
     remediation_status: str = "pending"
+    estimated_hours_saved: float = 0.0
+    incident_risk_score: str = "low"
 
     model_config = {"from_attributes": True}
 

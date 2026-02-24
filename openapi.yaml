@@ -464,6 +464,44 @@ paths:
         "404":
           description: Change not found
 
+  /api/v1/contracts/live-jobs/sync:
+    post:
+      operationId: syncLiveJobs
+      summary: Sync live Devin sessions into remediation jobs for dashboard fallback
+      tags:
+        - contracts
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 200
+        - name: include_terminal
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: true
+      responses:
+        "200":
+          description: Sync result counters
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scanned:
+                    type: integer
+                  imported:
+                    type: integer
+                  updated:
+                    type: integer
+                  skipped:
+                    type: integer
+
   /api/v1/invoices/team-summary:
     get:
       operationId: getTeamSummary
@@ -596,9 +634,6 @@ components:
           nullable: true
         cached_tokens:
           type: integer
-          nullable: true
-        total_cost:
-          type: number
           nullable: true
         ended_at:
           type: string
@@ -819,9 +854,31 @@ components:
         affected_services:
           type: integer
           default: 0
+        impacted_services:
+          type: array
+          items:
+            type: string
+        target_repos:
+          type: array
+          items:
+            type: string
+        source_repo:
+          type: string
+        active_jobs:
+          type: integer
+          default: 0
+        pr_count:
+          type: integer
+          default: 0
         remediation_status:
           type: string
           default: pending
+        estimated_hours_saved:
+          type: number
+          default: 0.0
+        incident_risk_score:
+          type: string
+          default: low
 
     ContractChangeDetailResponse:
       type: object
@@ -899,6 +956,12 @@ components:
           type: string
           nullable: true
         error_summary:
+          type: string
+          nullable: true
+        is_dry_run:
+          type: boolean
+          default: false
+        devin_session_url:
           type: string
           nullable: true
         audit_entries:

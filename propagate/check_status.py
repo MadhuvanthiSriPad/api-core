@@ -257,6 +257,17 @@ async def check_jobs(change_id: int | None = None) -> None:
                                 )
                                 print(f"  [{job.target_repo}] -> NEEDS_HUMAN (protected path): {path_violations}")
                                 continue
+                        elif guardrails.protected_paths:
+                            # Fail closed: cannot verify changed files against
+                            # protected paths — require human review.
+                            job.status = JobStatus.NEEDS_HUMAN.value
+                            job.error_summary = "Cannot verify PR changed files against protected paths"
+                            await _log_transition(
+                                db, job, old, JobStatus.NEEDS_HUMAN.value,
+                                "Path validation fail-closed: changed files unavailable",
+                            )
+                            print(f"  [{job.target_repo}] -> NEEDS_HUMAN (changed files unavailable for path check)")
+                            continue
 
                         job.status = JobStatus.GREEN.value
                         merge_ok, merge_reason = guardrails.check_can_merge(ci_passed)

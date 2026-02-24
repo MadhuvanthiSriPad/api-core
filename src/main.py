@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+logger = logging.getLogger(__name__)
 
 from src.config import settings
 from src.database import init_db, close_db
@@ -14,6 +17,22 @@ from src.middleware.api_key_auth import ApiKeyAuthMiddleware
 from src.middleware.usage_telemetry import UsageTelemetryMiddleware
 from src.routes import sessions, teams, analytics, usage, contracts, invoices
 from propagate.sync_devin import run_sync_loop
+
+
+def _on_sync_task_done(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc:
+        logger.error("Sync task crashed, restarting: %s", exc, exc_info=exc)
+        new_task = asyncio.create_task(
+            run_sync_loop(
+                interval_seconds=settings.devin_sync_interval_seconds,
+                limit=settings.devin_sync_limit,
+                include_terminal=True,
+            )
+        )
+        new_task.add_done_callback(_on_sync_task_done)
 
 
 @asynccontextmanager
@@ -28,6 +47,7 @@ async def lifespan(app: FastAPI):
                 include_terminal=True,
             )
         )
+        sync_task.add_done_callback(_on_sync_task_done)
     try:
         yield
     finally:

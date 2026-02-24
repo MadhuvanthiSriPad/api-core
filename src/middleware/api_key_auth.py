@@ -19,7 +19,12 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
         expected_key = settings.api_key
         if not expected_key:
-            return await call_next(request)
+            if settings.debug:
+                return await call_next(request)
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "API_CORE_API_KEY not configured"},
+            )
 
         if request.method == "OPTIONS" or request.url.path in _EXEMPT_PATHS:
             return await call_next(request)

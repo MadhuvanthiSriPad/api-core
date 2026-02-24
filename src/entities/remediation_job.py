@@ -49,4 +49,7 @@ class RemediationJob(Base):
         """Convenience link for dashboard drill-down."""
         if not self.devin_run_id:
             return None
-        return f"{settings.devin_app_base}/sessions/{self.devin_run_id}"
+        run_ref = self.devin_run_id.strip()
+        if run_ref.startswith("http://") or run_ref.startswith("https://"):
+            return run_ref
+        return f"{settings.devin_app_base}/sessions/{run_ref}"

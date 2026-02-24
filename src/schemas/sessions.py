@@ -65,7 +65,6 @@ class SessionUpdate(BaseModel):
     input_tokens: int | None = None
     output_tokens: int | None = None
     cached_tokens: int | None = None
-    total_cost: float | None = None
     ended_at: datetime | None = None
     duration_seconds: float | None = None
     error_message: str | None = None
