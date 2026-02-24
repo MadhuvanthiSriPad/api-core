@@ -100,12 +100,20 @@ class DevinClient:
         logger.info("Devin session created: %s", data.get("session_id"))
         return data
 
-    async def send_message(self, session_id: str, message: str) -> dict:
+    async def send_message(
+        self,
+        session_id: str,
+        message: str,
+        wave_context: dict | None = None,
+    ) -> dict:
         """Send follow-up context to an existing Devin session."""
+        payload = {"message": message}
+        if wave_context:
+            payload["wave_context"] = wave_context
         resp = await self._request_with_retry(
             "post",
             f"{self.base_url}/sessions/{session_id}/messages",
-            json={"message": message},
+            json=payload,
         )
         return resp.json()
 

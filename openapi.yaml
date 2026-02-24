@@ -8,6 +8,9 @@ servers:
   - url: http://localhost:8001
     description: Local development
 
+security:
+  - ApiKeyAuth: []
+
 paths:
   /api/v1/sessions:
     post:
@@ -166,6 +169,7 @@ paths:
       summary: Health check endpoint
       tags:
         - health
+      security: []
       responses:
         "200":
           description: Service health status
@@ -498,6 +502,11 @@ paths:
                       type: integer
 
 components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
   schemas:
     SessionCreate:
       type: object
@@ -663,6 +672,9 @@ components:
         created_at:
           type: string
           format: date-time
+        total_sessions:
+          type: integer
+          default: 0
         session_count:
           type: integer
           default: 0

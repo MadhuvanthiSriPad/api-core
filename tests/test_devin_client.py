@@ -41,3 +41,24 @@ class TestDevinClient:
             f"{client.base_url}/sessions/sess_123/messages",
             json={"message": "Wave 0 complete"},
         )
+
+    @pytest.mark.asyncio
+    async def test_send_message_includes_wave_context(self):
+        client = DevinClient(api_key="test-key")
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"ok": True}
+        wave_context = {"type": "wave-context", "wave_index": 1}
+
+        with patch.object(client, "_request_with_retry", new=AsyncMock(return_value=mock_resp)) as mock_req:
+            result = await client.send_message(
+                "sess_456",
+                "Wave 1 complete",
+                wave_context=wave_context,
+            )
+
+        assert result["ok"] is True
+        mock_req.assert_awaited_once_with(
+            "post",
+            f"{client.base_url}/sessions/sess_456/messages",
+            json={"message": "Wave 1 complete", "wave_context": wave_context},
+        )

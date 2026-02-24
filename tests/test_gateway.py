@@ -172,6 +172,19 @@ class TestTeams:
         assert resp.status_code == 200
         assert resp.json()["name"] == "Test Team"
 
+    @pytest.mark.asyncio
+    async def test_get_team_includes_total_sessions_alias(self, client, seed_team):
+        await client.post("/api/v1/sessions", json={
+            "team_id": "team_test",
+            "agent_name": "team-agent",
+            "priority": "low",
+        })
+        resp = await client.get("/api/v1/teams/team_test")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_sessions"] == 1
+        assert data["session_count"] == 1
+
 
 class TestAnalytics:
     @pytest.mark.asyncio

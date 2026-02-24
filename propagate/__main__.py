@@ -128,7 +128,14 @@ async def _send_context_to_wave(
 
     async def send_one(session_id: str) -> None:
         try:
-            await client.send_message(session_id, context_message)
+            await client.send_message(
+                session_id,
+                context_message,
+                wave_context={
+                    "type": "wave-context",
+                    "wave_index": wave_idx,
+                },
+            )
         except Exception as e:
             print(f"    Context message failed for {session_id}: {e}")
 

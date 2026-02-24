@@ -5,6 +5,7 @@ import subprocess
 import time
 import httpx
 import logging
+import os
 from typing import List, Dict
 
 logger = logging.getLogger(__name__)
@@ -18,6 +19,15 @@ class IntegrationTestRunner:
         self.base_url_api = "http://localhost:8001"
         self.base_url_billing = "http://localhost:8002"
         self.base_url_dashboard = "http://localhost:8003"
+        self.api_core_api_key = os.getenv("API_CORE_API_KEY", "demo-api-key")
+
+    def _api_core_headers(self, caller_service: str | None = None) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if caller_service:
+            headers["X-Caller-Service"] = caller_service
+        if self.api_core_api_key:
+            headers["X-API-Key"] = self.api_core_api_key
+        return headers
 
     async def run_full_suite(self) -> Dict[str, any]:
         """
@@ -150,7 +160,8 @@ class IntegrationTestRunner:
                     "team_id": "test-team",
                     "agent_name": "test-agent",
                     "priority": "high"
-                }
+                },
+                headers=self._api_core_headers(),
             )
             if resp.status_code == 201:
                 print("  [PASS] test_create_session")
@@ -175,7 +186,7 @@ class IntegrationTestRunner:
             # (simulates what billing-service does: fetch sessions with X-Caller-Service header)
             resp = await client.get(
                 f"{self.base_url_api}/api/v1/sessions",
-                headers={"X-Caller-Service": "billing-service"},
+                headers=self._api_core_headers(caller_service="billing-service"),
             )
             if resp.status_code != 200:
                 print(f"  [FAIL] test_billing_fetch_session (api-core returned {resp.status_code})")
@@ -207,7 +218,7 @@ class IntegrationTestRunner:
             # Verify api-core stats endpoint works (dashboard's primary data source)
             resp = await client.get(
                 f"{self.base_url_api}/api/v1/sessions/stats",
-                headers={"X-Caller-Service": "dashboard-service"},
+                headers=self._api_core_headers(caller_service="dashboard-service"),
             )
             if resp.status_code != 200:
                 print(f"  [FAIL] test_dashboard_aggregation (stats returned {resp.status_code})")
@@ -238,7 +249,8 @@ class IntegrationTestRunner:
             # Create session → Fetch via dashboard
             create_resp = await client.post(
                 f"{self.base_url_api}/api/v1/sessions",
-                json={"team_id": "e2e-test", "agent_name": "e2e", "priority": "low"}
+                json={"team_id": "e2e-test", "agent_name": "e2e", "priority": "low"},
+                headers=self._api_core_headers(),
             )
 
             if create_resp.status_code != 201:
@@ -264,7 +276,8 @@ class IntegrationTestRunner:
             # Create a session
             create_resp = await client.post(
                 f"{self.base_url_api}/api/v1/sessions",
-                json={"team_id": "conformance-test", "agent_name": "conformance", "priority": "low"}
+                json={"team_id": "conformance-test", "agent_name": "conformance", "priority": "low"},
+                headers=self._api_core_headers(),
             )
             if create_resp.status_code != 201:
                 print(f"  [FAIL] test_contract_conformance (create returned {create_resp.status_code})")

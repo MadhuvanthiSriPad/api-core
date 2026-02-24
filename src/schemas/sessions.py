@@ -88,6 +88,7 @@ class TeamResponse(BaseModel):
     plan: str
     monthly_budget: float
     created_at: datetime
+    total_sessions: int = 0
     session_count: int = 0
     total_cost: float = 0.0
 

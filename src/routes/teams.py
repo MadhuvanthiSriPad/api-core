@@ -20,7 +20,7 @@ async def list_teams(db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(
             Team,
-            func.count(AgentSession.session_id).label("session_count"),
+            func.count(AgentSession.session_id).label("total_sessions"),
             func.coalesce(func.sum(AgentSession.total_cost), 0.0).label("total_cost"),
         )
         .outerjoin(AgentSession, Team.id == AgentSession.team_id)
@@ -35,10 +35,11 @@ async def list_teams(db: AsyncSession = Depends(get_db)):
             plan=team.plan,
             monthly_budget=team.monthly_budget,
             created_at=team.created_at,
-            session_count=session_count,
+            total_sessions=int(total_sessions or 0),
+            session_count=int(total_sessions or 0),
             total_cost=round(float(total_cost), 4),
         )
-        for team, session_count, total_cost in rows
+        for team, total_sessions, total_cost in rows
     ]
 
 
@@ -48,7 +49,7 @@ async def get_team(team_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(
             Team,
-            func.count(AgentSession.session_id).label("session_count"),
+            func.count(AgentSession.session_id).label("total_sessions"),
             func.coalesce(func.sum(AgentSession.total_cost), 0.0).label("total_cost"),
         )
         .outerjoin(AgentSession, Team.id == AgentSession.team_id)
@@ -59,13 +60,14 @@ async def get_team(team_id: str, db: AsyncSession = Depends(get_db)):
     if not row:
         raise HTTPException(status_code=404, detail=f"Team {team_id} not found")
 
-    team, session_count, total_cost = row
+    team, total_sessions, total_cost = row
     return TeamResponse(
         id=team.id,
         name=team.name,
         plan=team.plan,
         monthly_budget=team.monthly_budget,
         created_at=team.created_at,
-        session_count=session_count,
+        total_sessions=int(total_sessions or 0),
+        session_count=int(total_sessions or 0),
         total_cost=round(float(total_cost), 4),
     )
