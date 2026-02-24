@@ -251,12 +251,19 @@ async def main(dry_run: bool = False, no_wait: bool = False, ci: bool = False):
         await db.flush()
         print(f"  Stored as change_id={change.id}")
 
-        # Step 3: Impact mapping via usage telemetry
-        print("\n--- STEP 3: Impact mapping (last 7 days usage) ---")
-        impacts = await compute_impact_sets(db, classified.changed_routes)
+        # Step 3: Impact mapping — service map is the authoritative source.
+        # Services that declare depends_on api-core are always impacted.
+        # Telemetry enriches call counts but does not gate inclusion.
+        print("\n--- STEP 3: Impact mapping ---")
+        svc_map = load_service_map()
+        declared_dependents = set(svc_map.keys())
+        impacts = await compute_impact_sets(
+            db, classified.changed_routes, declared_dependents
+        )
         print(f"  Found {len(impacts)} impacted caller(s):")
         for imp in impacts:
-            print(f"    {imp.caller_service} → {imp.route_template} ({imp.calls_last_7d} calls)")
+            calls_str = f"{imp.calls_last_7d} calls/7d" if imp.calls_last_7d else "declared dependent"
+            print(f"    {imp.caller_service} → {imp.route_template} ({calls_str})")
 
             # Store impact set
             impact_row = ImpactSet(
@@ -281,10 +288,12 @@ async def main(dry_run: bool = False, no_wait: bool = False, ci: bool = False):
             db.add(snapshot)
             await db.commit()
             return
+        await db.flush()
+        await db.commit()  # release SQLite write lock before remediation_jobs inserts
 
-        # Step 4: Load service map and build dependency graph
+
+        # Step 4: Build dependency graph from already-loaded service map
         print("\n--- STEP 4: Loading service map & dependency graph ---")
-        svc_map = load_service_map()
         for name, info in svc_map.items():
             print(f"  {name} → {info.repo} (depends_on: {info.depends_on})")
 

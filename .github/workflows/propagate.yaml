@@ -3,8 +3,14 @@ name: Contract Propagation
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened]
     paths:
       - "openapi.yaml"
+  push:
+    branches: [main]
+    paths:
+      - "openapi.yaml"
+  workflow_dispatch:
 
 jobs:
   propagate:
@@ -38,22 +44,47 @@ jobs:
       - name: Prepare data directory
         run: mkdir -p data
 
-      - name: Seed baseline contract from base branch
+      - name: Seed baseline contract from event base
         run: |
           python -c "
-          import asyncio, hashlib, json, os, sys
+          import asyncio, hashlib, json, os, subprocess, sys
           sys.path.insert(0, '.')
           os.environ.setdefault('API_CORE_DATABASE_URL', 'sqlite+aiosqlite:///./data/api_core.db')
 
-          async def seed():
-              import subprocess
+          def _base_openapi_content():
+              event_name = os.getenv('GITHUB_EVENT_NAME', '')
+              event_path = os.getenv('GITHUB_EVENT_PATH', '')
+              base_spec_ref = None
+
               try:
-                  base_content = subprocess.check_output(
-                      ['git', 'show', 'origin/main:openapi.yaml'], text=True
-                  )
-              except subprocess.CalledProcessError:
-                  print('No base branch openapi.yaml found, seeding empty baseline')
-                  base_content = json.dumps({'openapi': '3.1.0', 'info': {}, 'paths': {}})
+                  if event_path and os.path.exists(event_path):
+                      with open(event_path) as f:
+                          event = json.load(f)
+                      if event_name == 'pull_request':
+                          base_sha = event.get('pull_request', {}).get('base', {}).get('sha')
+                          if base_sha:
+                              base_spec_ref = f'{base_sha}:openapi.yaml'
+                      elif event_name == 'push':
+                          before_sha = event.get('before')
+                          if before_sha and before_sha != '0000000000000000000000000000000000000000':
+                              base_spec_ref = f'{before_sha}:openapi.yaml'
+              except Exception as e:
+                  print(f'Failed to parse event payload for baseline selection: {e}')
+
+              candidates = [base_spec_ref, 'origin/main:openapi.yaml']
+              for ref in candidates:
+                  if not ref:
+                      continue
+                  try:
+                      return subprocess.check_output(['git', 'show', ref], text=True)
+                  except subprocess.CalledProcessError:
+                      continue
+
+              print('No base openapi.yaml found, seeding empty baseline')
+              return json.dumps({'openapi': '3.1.0', 'info': {}, 'paths': {}})
+
+          async def seed():
+              base_content = _base_openapi_content()
 
               from src.database import async_session, init_db
               from src.entities.contract_snapshot import ContractSnapshot

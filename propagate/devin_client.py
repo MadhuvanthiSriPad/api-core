@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 import httpx
 
@@ -127,3 +128,35 @@ class DevinClient:
             f"{self.base_url}/sessions/{session_id}",
         )
         return resp.json()
+
+    async def list_sessions(
+        self,
+        limit: int = 50,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List Devin sessions.
+
+        Handles common response envelope variants:
+        - [{"session_id": "..."}]
+        - {"sessions": [...]}
+        - {"data": [...]}
+        - {"results": [...]}
+        """
+        params: dict[str, Any] = {"limit": limit}
+        if status:
+            params["status"] = status
+
+        resp = await self._request_with_retry(
+            "get",
+            f"{self.base_url}/sessions",
+            params=params,
+        )
+        payload = resp.json()
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict):
+            for key in ("sessions", "data", "results"):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    return value
+        return []

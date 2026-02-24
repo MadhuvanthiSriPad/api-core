@@ -10,6 +10,11 @@ services:
     environment:
       - API_CORE_DATABASE_URL=sqlite+aiosqlite:///./api_core.db
       - API_CORE_API_KEY=${API_CORE_API_KEY:-demo-api-key}
+      - API_CORE_DEVIN_API_KEY=${API_CORE_DEVIN_API_KEY:-}
+      - API_CORE_GITHUB_TOKEN=${API_CORE_GITHUB_TOKEN:-}
+      - API_CORE_DEVIN_SYNC_ENABLED=${API_CORE_DEVIN_SYNC_ENABLED:-true}
+      - API_CORE_DEVIN_SYNC_INTERVAL_SECONDS=${API_CORE_DEVIN_SYNC_INTERVAL_SECONDS:-30}
+      - API_CORE_DEVIN_SYNC_LIMIT=${API_CORE_DEVIN_SYNC_LIMIT:-50}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 5s

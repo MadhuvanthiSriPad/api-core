@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     devin_api_key: str = ""
     devin_api_base: str = "https://api.devin.ai/v1"
     devin_app_base: str = "https://app.devin.ai"
+    devin_sync_enabled: bool = False
+    devin_sync_interval_seconds: int = 45
+    devin_sync_limit: int = 50
 
     if _USES_PYDANTIC_SETTINGS:
         model_config = {"env_prefix": "API_CORE_"}

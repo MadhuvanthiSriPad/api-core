@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ContractCurrentResponse(BaseModel):
@@ -62,6 +62,11 @@ class ContractChangeResponse(BaseModel):
     changed_routes_json: str
     changed_fields_json: str | None = None
     affected_services: int = 0
+    impacted_services: list[str] = Field(default_factory=list)
+    target_repos: list[str] = Field(default_factory=list)
+    source_repo: str = "api-core"
+    active_jobs: int = 0
+    pr_count: int = 0
     remediation_status: str = "pending"
 
     model_config = {"from_attributes": True}

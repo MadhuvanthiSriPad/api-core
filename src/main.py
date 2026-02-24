@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,14 +13,28 @@ from src.database import init_db, close_db
 from src.middleware.api_key_auth import ApiKeyAuthMiddleware
 from src.middleware.usage_telemetry import UsageTelemetryMiddleware
 from src.routes import sessions, teams, analytics, usage, contracts, invoices
+from propagate.sync_devin import run_sync_loop
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    sync_task: asyncio.Task | None = None
     await init_db()
+    if settings.devin_sync_enabled and settings.devin_api_key:
+        sync_task = asyncio.create_task(
+            run_sync_loop(
+                interval_seconds=settings.devin_sync_interval_seconds,
+                limit=settings.devin_sync_limit,
+                include_terminal=True,
+            )
+        )
     try:
         yield
     finally:
+        if sync_task is not None:
+            sync_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await sync_task
         await close_db()
 
 

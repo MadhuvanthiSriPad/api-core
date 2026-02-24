@@ -53,48 +53,52 @@ async def dispatch_remediation_jobs(
     Does NOT poll for completion — use ``check_status`` to monitor.
     """
     client = DevinClient()
-    semaphore = asyncio.Semaphore(guardrails.max_parallel)
+    is_sqlite = settings.database_url.startswith("sqlite")
+    effective_parallel = 1 if is_sqlite else guardrails.max_parallel
+    semaphore = asyncio.Semaphore(effective_parallel)
     jobs: list[RemediationJob] = []
 
-    print(f"\nDispatching {len(bundles)} Devin sessions (concurrency={guardrails.max_parallel})")
+    print(f"\nDispatching {len(bundles)} Devin sessions (concurrency={effective_parallel})")
+    if is_sqlite and guardrails.max_parallel > 1:
+        print("  SQLite detected: forcing serial dispatch to avoid database lock errors")
 
     async def dispatch_one(bundle: RepoFixBundle) -> RemediationJob:
-        # Each coroutine gets its own session to avoid concurrent AsyncSession use
-        async with async_session_factory() as own_db:
-            # Validate guardrails against all declared target paths.
-            violations = guardrails.validate_paths(_guardrail_target_paths(bundle))
-            if violations:
-                logger.warning(
-                    "Guardrail violation for %s: %s", bundle.target_service, violations
-                )
+        async with semaphore:
+            # Each coroutine gets its own session to avoid AsyncSession sharing.
+            async with async_session_factory() as own_db:
+                # Validate guardrails against all declared target paths.
+                violations = guardrails.validate_paths(_guardrail_target_paths(bundle))
+                if violations:
+                    logger.warning(
+                        "Guardrail violation for %s: %s", bundle.target_service, violations
+                    )
+                    job = RemediationJob(
+                        change_id=change_id,
+                        target_repo=bundle.target_repo,
+                        status=JobStatus.NEEDS_HUMAN.value,
+                        bundle_hash=bundle.bundle_hash,
+                        error_summary=f"Guardrail violation: {'; '.join(violations)}",
+                    )
+                    own_db.add(job)
+                    await own_db.flush()
+                    await _log_transition(
+                        own_db, job, None, JobStatus.NEEDS_HUMAN.value,
+                        f"Blocked by guardrail: {'; '.join(violations)}"
+                    )
+                    await own_db.commit()
+                    print(f"  [{bundle.target_service}] BLOCKED by guardrail: {violations}")
+                    return job
+
                 job = RemediationJob(
                     change_id=change_id,
                     target_repo=bundle.target_repo,
-                    status=JobStatus.NEEDS_HUMAN.value,
+                    status=JobStatus.QUEUED.value,
                     bundle_hash=bundle.bundle_hash,
-                    error_summary=f"Guardrail violation: {'; '.join(violations)}",
                 )
                 own_db.add(job)
                 await own_db.flush()
-                await _log_transition(
-                    own_db, job, None, JobStatus.NEEDS_HUMAN.value,
-                    f"Blocked by guardrail: {'; '.join(violations)}"
-                )
-                await own_db.commit()
-                print(f"  [{bundle.target_service}] BLOCKED by guardrail: {violations}")
-                return job
+                await _log_transition(own_db, job, None, JobStatus.QUEUED.value, "Job created")
 
-            job = RemediationJob(
-                change_id=change_id,
-                target_repo=bundle.target_repo,
-                status=JobStatus.QUEUED.value,
-                bundle_hash=bundle.bundle_hash,
-            )
-            own_db.add(job)
-            await own_db.flush()
-            await _log_transition(own_db, job, None, JobStatus.QUEUED.value, "Job created")
-
-            async with semaphore:
                 try:
                     old = job.status
                     job.status = JobStatus.RUNNING.value

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.database import get_db
+from propagate.sync_devin import sync_devin_sessions
 from src.entities.contract_change import ContractChange
 from src.entities.impact_set import ImpactSet
 from src.entities.remediation_job import RemediationJob
@@ -64,8 +65,11 @@ async def list_changes(
 
     response = []
     for change in changes:
-        unique_services = {imp.caller_service for imp in change.impact_sets}
+        unique_services = sorted({imp.caller_service for imp in change.impact_sets})
         jobs = change.remediation_jobs
+        target_repos = sorted({j.target_repo for j in jobs if j.target_repo})
+        active_jobs = sum(1 for j in jobs if j.status in {"queued", "running", "pr_opened"})
+        pr_count = sum(1 for j in jobs if j.pr_url)
         if not jobs:
             rem_status = "pending"
         elif all(j.status == "green" for j in jobs):
@@ -86,9 +90,28 @@ async def list_changes(
             changed_routes_json=change.changed_routes_json,
             changed_fields_json=change.changed_fields_json,
             affected_services=len(unique_services),
+            impacted_services=unique_services,
+            target_repos=target_repos,
+            source_repo="api-core",
+            active_jobs=active_jobs,
+            pr_count=pr_count,
             remediation_status=rem_status,
         ))
     return response
+
+
+@router.post("/live-jobs/sync")
+async def sync_live_jobs(
+    limit: int = Query(default=50, ge=1, le=200),
+    include_terminal: bool = Query(default=True),
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually sync Devin sessions into remediation jobs for dashboard fallback."""
+    return await sync_devin_sessions(
+        db=db,
+        limit=limit,
+        include_terminal=include_terminal,
+    )
 
 
 @router.get("/changes/{change_id}", response_model=ContractChangeDetailResponse)

@@ -62,3 +62,19 @@ class TestDevinClient:
             f"{client.base_url}/sessions/sess_456/messages",
             json={"message": "Wave 1 complete", "wave_context": wave_context},
         )
+
+    @pytest.mark.asyncio
+    async def test_list_sessions_supports_data_envelope(self):
+        client = DevinClient(api_key="test-key")
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"data": [{"session_id": "devin_1"}]}
+
+        with patch.object(client, "_request_with_retry", new=AsyncMock(return_value=mock_resp)) as mock_req:
+            result = await client.list_sessions(limit=10, status="running")
+
+        assert result == [{"session_id": "devin_1"}]
+        mock_req.assert_awaited_once_with(
+            "get",
+            f"{client.base_url}/sessions",
+            params={"limit": 10, "status": "running"},
+        )

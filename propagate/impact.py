@@ -1,4 +1,4 @@
-"""Impact mapping — query usage telemetry to find affected services."""
+"""Impact mapping — determine affected services from service map and usage telemetry."""
 
 from __future__ import annotations
 
@@ -22,24 +22,37 @@ class ImpactRecord:
 async def compute_impact_sets(
     db: AsyncSession,
     changed_routes: list[str],
+    declared_dependents: set[str] | None = None,
 ) -> list[ImpactRecord]:
-    """Query usage_requests for the last 7 days to find impacted callers.
+    """Return impacted services for each changed route.
+
+    Primary source: declared_dependents — any service explicitly listed here
+    is always included, regardless of call history.  This is the service map
+    truth: if billing-service declares depends_on api-core, it is impacted by
+    any api-core contract change.
+
+    Enrichment: usage telemetry from the last 7 days provides call counts and
+    can surface additional callers not in the service map.
 
     changed_routes: list of strings like "POST /api/v1/sessions"
+    declared_dependents: set of service names from the service map
     """
-    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    if not changed_routes:
+        return []
 
-    # Parse changed routes into (method, path) tuples
-    route_filters = []
+    route_filters: list[tuple[str, str]] = []
     for route_str in changed_routes:
         parts = route_str.split(" ", 1)
         if len(parts) == 2:
-            route_filters.append((parts[0], parts[1]))
+            route_filters.append((parts[0].upper(), parts[1]))
 
     if not route_filters:
         return []
 
-    impacts: list[ImpactRecord] = []
+    # Collect telemetry call counts: (service, method, route) -> count
+    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    telemetry: dict[tuple[str, str, str], int] = {}
+    telemetry_services: set[str] = set()
 
     for method, route_template in route_filters:
         result = await db.execute(
@@ -57,13 +70,21 @@ async def compute_impact_sets(
             )
             .group_by(UsageRequest.caller_service, UsageRequest.route_template, UsageRequest.method)
         )
-
         for row in result.all():
+            telemetry[(row.caller_service, row.method, row.route_template)] = row.call_count
+            telemetry_services.add(row.caller_service)
+
+    # Union of declared dependents and any telemetry callers
+    all_services = set(declared_dependents or set()) | telemetry_services
+
+    impacts: list[ImpactRecord] = []
+    for svc in sorted(all_services):
+        for method, route_template in route_filters:
             impacts.append(ImpactRecord(
-                caller_service=row.caller_service,
-                route_template=row.route_template,
-                method=row.method,
-                calls_last_7d=row.call_count,
+                caller_service=svc,
+                route_template=route_template,
+                method=method,
+                calls_last_7d=telemetry.get((svc, method, route_template), 0),
             ))
 
     return impacts
