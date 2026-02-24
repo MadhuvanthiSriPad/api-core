@@ -19,7 +19,7 @@ class UsageTelemetryMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         duration_ms = (time.perf_counter() - start) * 1000
 
-        caller = request.headers.get("X-Caller-Service", "unknown")
+        caller = (request.headers.get("X-Caller-Service") or "").strip()
 
         # Get the matched route template from FastAPI
         route = request.scope.get("route")
@@ -27,6 +27,11 @@ class UsageTelemetryMiddleware(BaseHTTPMiddleware):
 
         # Skip health checks and docs from telemetry
         if route_template in ("/health", "/docs", "/openapi.json", "/redoc"):
+            return response
+
+        # We only track explicit service-to-service calls. Requests without a
+        # caller header create noisy "unknown" telemetry that pollutes UI stats.
+        if not caller or caller.lower() == "unknown":
             return response
 
         try:

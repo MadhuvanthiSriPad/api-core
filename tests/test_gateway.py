@@ -3,11 +3,12 @@
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 from src.database import Base, get_db
 from src.main import app
-from src.entities import AgentSession, TokenUsage, Team
+from src.entities import AgentSession, TokenUsage, Team, UsageRequest
 
 
 # Use SQLite for tests
@@ -208,6 +209,71 @@ class TestAnalytics:
         assert rows[0]["total_sessions"] == 1
         # Backward-compatible alias retained for existing consumers.
         assert rows[0]["sessions"] == 1
+
+
+class TestUsageTelemetry:
+    @pytest.mark.asyncio
+    async def test_top_callers_excludes_unknown(self, client):
+        # Simulate legacy rows.
+        async with TestSession() as db:
+            db.add_all(
+                [
+                    UsageRequest(
+                        caller_service="unknown",
+                        method="GET",
+                        route_template="/api/v1/sessions/stats",
+                        status_code=200,
+                        duration_ms=1.0,
+                    ),
+                    UsageRequest(
+                        caller_service="billing-service",
+                        method="GET",
+                        route_template="/api/v1/sessions/stats",
+                        status_code=200,
+                        duration_ms=2.0,
+                    ),
+                ]
+            )
+            await db.commit()
+
+        resp = await client.get("/api/v1/usage/top-callers")
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload
+        callers = {row["caller_service"] for row in payload}
+        assert "unknown" not in callers
+        assert "billing-service" in callers
+
+    @pytest.mark.asyncio
+    async def test_route_calls_excludes_unknown_by_default(self, client):
+        async with TestSession() as db:
+            db.add_all(
+                [
+                    UsageRequest(
+                        caller_service="unknown",
+                        method="GET",
+                        route_template="/api/v1/sessions/stats",
+                        status_code=200,
+                        duration_ms=1.0,
+                    ),
+                    UsageRequest(
+                        caller_service="dashboard-service",
+                        method="GET",
+                        route_template="/api/v1/sessions/stats",
+                        status_code=200,
+                        duration_ms=2.0,
+                    ),
+                ]
+            )
+            await db.commit()
+
+        resp = await client.get("/api/v1/usage/route-calls")
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload
+        callers = {row["caller_service"] for row in payload}
+        assert "unknown" not in callers
+        assert "dashboard-service" in callers
 
 
 class TestApiKeyAuth:

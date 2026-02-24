@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select, func
+from sqlalchemy import select, func, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
@@ -17,6 +17,10 @@ router = APIRouter(prefix="/usage", tags=["usage"])
 
 def _since(days: int) -> datetime:
     return datetime.now(timezone.utc) - timedelta(days=days)
+
+
+def _known_callers_filter():
+    return func.lower(UsageRequest.caller_service).notin_(["", "unknown"])
 
 
 @router.get("/top-routes", response_model=list[TopRouteResponse])
@@ -32,7 +36,14 @@ async def top_routes(
             UsageRequest.route_template,
             UsageRequest.method,
             func.count(UsageRequest.id).label("total_calls"),
-            func.count(func.distinct(UsageRequest.caller_service)).label("unique_callers"),
+            func.count(
+                func.distinct(
+                    case(
+                        (_known_callers_filter(), UsageRequest.caller_service),
+                        else_=None,
+                    )
+                )
+            ).label("unique_callers"),
             func.avg(UsageRequest.duration_ms).label("avg_duration_ms"),
         )
         .where(UsageRequest.ts >= cutoff)
@@ -68,6 +79,7 @@ async def top_callers(
             func.count(func.distinct(UsageRequest.route_template)).label("routes_called"),
         )
         .where(UsageRequest.ts >= cutoff)
+        .where(_known_callers_filter())
     )
     if route:
         query = query.where(UsageRequest.route_template == route)
@@ -106,6 +118,8 @@ async def route_calls(
         query = query.where(UsageRequest.route_template == route)
     if caller_service:
         query = query.where(UsageRequest.caller_service == caller_service)
+    else:
+        query = query.where(_known_callers_filter())
     query = query.order_by(UsageRequest.ts.desc()).limit(limit)
     result = await db.execute(query)
     return result.scalars().all()
