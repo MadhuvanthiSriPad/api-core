@@ -14,6 +14,14 @@ depends_on = None
 
 
 def upgrade() -> None:
+    from alembic import op as _op
+    bind = _op.get_bind()
+    inspector = sa.inspect(bind)
+    existing_tables = set(inspector.get_table_names())
+
+    if "teams" in existing_tables:
+        return
+
     op.create_table(
         "teams",
         sa.Column("id", sa.String(50), primary_key=True),
