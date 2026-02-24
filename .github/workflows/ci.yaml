@@ -9,6 +9,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -23,7 +24,10 @@ jobs:
       - name: Runtime import smoke test
         run: python -c "import src.config, src.database"
       - name: Run tests
-        run: pytest tests/ -v
+        timeout-minutes: 6
+        env:
+          PYTHONFAULTHANDLER: "1"
+        run: pytest tests/ -v -o faulthandler_timeout=60
       - name: Validate OpenAPI spec matches FastAPI routes
         run: |
           python -c "
