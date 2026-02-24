@@ -1,5 +1,7 @@
 """Tests for api-core endpoints using SQLite in-memory."""
 
+import json
+
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
@@ -8,7 +10,14 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 
 from src.database import Base, get_db
 from src.main import app
-from src.entities import AgentSession, TokenUsage, Team, UsageRequest
+from src.entities import (
+    AgentSession,
+    ContractChange,
+    ImpactSet,
+    Team,
+    TokenUsage,
+    UsageRequest,
+)
 
 
 # Use SQLite for tests
@@ -278,6 +287,77 @@ class TestUsageTelemetry:
         callers = {row["caller_service"] for row in payload}
         assert "unknown" not in callers
         assert "dashboard-service" in callers
+
+
+class TestContracts:
+    @pytest.mark.asyncio
+    async def test_contract_change_detail_includes_blast_radius_metrics(self, client):
+        async with TestSession() as db:
+            change = ContractChange(
+                is_breaking=True,
+                severity="high",
+                summary_json=json.dumps({"summary": "breaking"}),
+                changed_routes_json=json.dumps([
+                    "POST /api/v1/sessions",
+                    "GET /api/v1/sessions",
+                    "GET /api/v1/sessions/{session_id}",
+                    "PATCH /api/v1/sessions/{session_id}",
+                ]),
+                changed_fields_json=json.dumps([
+                    {"route": "POST /api/v1/sessions", "field": "priority", "change": "added (required)"}
+                ]),
+            )
+            db.add(change)
+            await db.flush()
+            db.add_all(
+                [
+                    ImpactSet(
+                        change_id=change.id,
+                        caller_service="billing-service",
+                        method="GET",
+                        route_template="/api/v1/sessions",
+                        calls_last_7d=312,
+                        confidence="high",
+                    ),
+                    ImpactSet(
+                        change_id=change.id,
+                        caller_service="billing-service",
+                        method="POST",
+                        route_template="/api/v1/sessions",
+                        calls_last_7d=245,
+                        confidence="high",
+                    ),
+                    ImpactSet(
+                        change_id=change.id,
+                        caller_service="dashboard-service",
+                        method="GET",
+                        route_template="/api/v1/sessions/{session_id}",
+                        calls_last_7d=487,
+                        confidence="high",
+                    ),
+                    ImpactSet(
+                        change_id=change.id,
+                        caller_service="dashboard-service",
+                        method="PATCH",
+                        route_template="/api/v1/sessions/{session_id}",
+                        calls_last_7d=156,
+                        confidence="medium",
+                    ),
+                ]
+            )
+            await db.commit()
+            change_id = change.id
+
+        resp = await client.get(f"/api/v1/contracts/changes/{change_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["affected_services"] == 2
+        assert data["affected_routes"] == 4
+        assert data["total_calls_last_7d"] == 1200
+        assert sorted(data["impacted_services"]) == ["billing-service", "dashboard-service"]
+        assert len(data["changed_routes"]) == 4
+        assert {row["method"] for row in data["impact_sets"]} == {"GET", "PATCH", "POST"}
 
 
 class TestApiKeyAuth:

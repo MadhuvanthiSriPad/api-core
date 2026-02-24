@@ -59,6 +59,18 @@ def _service_name_from_repo(repo_url: str) -> str:
     return repo_url.rstrip("/").split("/")[-1]
 
 
+def _parse_json_string_list(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [item for item in parsed if isinstance(item, str)]
+
+
 @router.get("/current", response_model=ContractCurrentResponse)
 async def get_current_contract():
     """Return the current openapi.yaml content and its version hash."""
@@ -186,6 +198,21 @@ async def get_change_detail(
 
     jobs = _dedupe_jobs_by_repo(change.remediation_jobs)
 
+    impacted_services = sorted(
+        {imp.caller_service for imp in change.impact_sets if imp.caller_service}
+    )
+    changed_routes = _parse_json_string_list(change.changed_routes_json)
+    if changed_routes:
+        affected_routes = len(changed_routes)
+    else:
+        affected_routes = len(
+            {
+                f"{(imp.method or '').upper()} {imp.route_template}".strip()
+                for imp in change.impact_sets
+            }
+        )
+    total_calls_last_7d = sum(int(imp.calls_last_7d or 0) for imp in change.impact_sets)
+
     return ContractChangeDetailResponse(
         id=change.id,
         base_ref=change.base_ref,
@@ -196,6 +223,11 @@ async def get_change_detail(
         summary_json=change.summary_json,
         changed_routes_json=change.changed_routes_json,
         changed_fields_json=change.changed_fields_json,
+        affected_services=len(impacted_services),
+        affected_routes=affected_routes,
+        total_calls_last_7d=total_calls_last_7d,
+        impacted_services=impacted_services,
+        changed_routes=changed_routes,
         impact_sets=[ImpactSetResponse.model_validate(imp) for imp in change.impact_sets],
         remediation_jobs=[RemediationJobResponse.model_validate(job) for job in jobs],
     )

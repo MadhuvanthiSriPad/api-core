@@ -16,6 +16,7 @@ class ImpactSetResponse(BaseModel):
     id: int
     caller_service: str
     route_template: str
+    method: str | None = None
     calls_last_7d: int
     confidence: str
     notes: str | None = None
@@ -84,7 +85,12 @@ class ContractChangeDetailResponse(BaseModel):
     summary_json: str
     changed_routes_json: str
     changed_fields_json: str | None = None
-    impact_sets: list[ImpactSetResponse] = []
-    remediation_jobs: list[RemediationJobResponse] = []
+    affected_services: int = 0
+    affected_routes: int = 0
+    total_calls_last_7d: int = 0
+    impacted_services: list[str] = Field(default_factory=list)
+    changed_routes: list[str] = Field(default_factory=list)
+    impact_sets: list[ImpactSetResponse] = Field(default_factory=list)
+    remediation_jobs: list[RemediationJobResponse] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}

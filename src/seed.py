@@ -303,21 +303,21 @@ async def seed_contract_change_demo(db: AsyncSession):
         ),
         ImpactSet(
             change_id=change.id,
-            route_template="/api/v1/sessions",
+            route_template="/api/v1/sessions/{session_id}",
             method="GET",
             caller_service="dashboard-service",
             calls_last_7d=487,
             confidence="high",
-            notes="GET — Polls sessions for live display",
+            notes="GET — Fetches individual session detail for drill-down",
         ),
         ImpactSet(
             change_id=change.id,
             route_template="/api/v1/sessions/{session_id}",
-            method="GET",
+            method="PATCH",
             caller_service="dashboard-service",
             calls_last_7d=156,
             confidence="medium",
-            notes="GET — Fetches individual session detail",
+            notes="PATCH — Updates session metadata from dashboard controls",
         ),
     ]
     for imp in impacts:
