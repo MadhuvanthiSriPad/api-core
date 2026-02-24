@@ -1,8 +1,13 @@
 .git
 .venv
+.venv311
+.pytest_cache
 __pycache__/
 *.pyc
-.pytest_cache/
+*.pyo
 *.db
 *.sqlite*
+.mypy_cache
+.coverage
 .DS_Store
+tests/
