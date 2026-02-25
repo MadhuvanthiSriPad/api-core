@@ -466,3 +466,46 @@ class TestDiffContracts:
         diffs = diff_contracts(old, new)
         assert any(d.diff_type == "field_type_changed" for d in diffs)
         assert any(d.diff_type == "field_removed" and "status" in d.field for d in diffs)
+
+    def test_response_array_item_schema_changes_are_detected(self):
+        """Array response item changes should count as response field changes."""
+        old = _make_spec(paths={
+            "/sessions": {"get": {
+                "responses": {"200": {"content": {"application/json": {"schema": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "usage": {
+                                "type": "object",
+                                "properties": {
+                                    "cached_tokens": {"type": "integer"},
+                                },
+                            },
+                        },
+                    },
+                }}}}}
+            }}
+        })
+        new = _make_spec(paths={
+            "/sessions": {"get": {
+                "responses": {"200": {"content": {"application/json": {"schema": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "usage": {
+                                "type": "object",
+                                "properties": {
+                                    "cache_read_tokens": {"type": "integer"},
+                                },
+                            },
+                        },
+                    },
+                }}}}}
+            }}
+        })
+
+        diffs = diff_contracts(old, new)
+        assert any(d.diff_type == "nested_field_removed" and "usage.cached_tokens" in d.field for d in diffs)
+        assert any(d.diff_type == "nested_field_added" and "usage.cache_read_tokens" in d.field for d in diffs)

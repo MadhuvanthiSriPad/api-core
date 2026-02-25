@@ -43,13 +43,19 @@ def _resolve_schema(spec: dict, schema: dict) -> dict:
 def _get_schema_properties(spec: dict, schema: dict) -> dict:
     """Get properties from a schema, resolving $ref if needed."""
     schema = _resolve_schema(spec, schema)
+    # For array responses/requests of objects, diff against item fields.
+    if schema.get("type") == "array":
+        item_schema = _resolve_schema(spec, schema.get("items", {}))
+        return item_schema.get("properties", {})
     return schema.get("properties", {})
 
 
 def _get_required_fields(spec: dict, schema: dict) -> set:
     """Get required fields from a schema, resolving $ref if needed."""
-    if "$ref" in schema:
-        schema = _resolve_ref(spec, schema["$ref"])
+    schema = _resolve_schema(spec, schema)
+    if schema.get("type") == "array":
+        item_schema = _resolve_schema(spec, schema.get("items", {}))
+        return set(item_schema.get("required", []))
     return set(schema.get("required", []))
 
 

@@ -356,7 +356,8 @@ async def seed_contract_change_demo(db: AsyncSession):
             "bundle_hash": "ij90kl12",
             "error_summary": (
                 "CI failed: test_invoice_generation assertion error — "
-                "expected 'total_cost' field but response now nests cost under 'billing.total'"
+                "expected 'billing.total' and optional budget cap, but response now uses "
+                "'billing.total_usd' and session creation requires 'max_cost_usd'"
             ),
         },
         {
@@ -368,9 +369,10 @@ async def seed_contract_change_demo(db: AsyncSession):
             "updated_at": now - timedelta(minutes=20),
             "bundle_hash": "mn34op56",
             "error_summary": (
-                "Devin session blocked — frontend JSX component uses duration_ms in "
-                "multiple computed values. Requires human review to decide between "
-                "adding backward-compat shim or full refactor."
+                "Devin session blocked — frontend usage views still reference "
+                "'usage.cached_tokens'. Requires human review to decide between "
+                "adding a backward-compat shim or fully migrating to "
+                "'usage.cache_read_tokens'."
             ),
         },
     ]

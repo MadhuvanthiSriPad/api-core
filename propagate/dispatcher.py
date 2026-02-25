@@ -107,7 +107,9 @@ async def dispatch_remediation_jobs(
 
                     session = await client.create_session(
                         bundle.prompt,
-                        idempotency_key=bundle.bundle_hash,
+                        # Scope idempotency to this contract change so reruns on
+                        # newer changes do not reuse stale sessions.
+                        idempotency_key=f"change-{change_id}-{bundle.bundle_hash}",
                     )
                     job.devin_run_id = session.get("session_id", "")
                     await own_db.flush()

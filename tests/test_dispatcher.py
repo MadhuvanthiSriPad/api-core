@@ -118,7 +118,7 @@ class TestDispatchOne:
         assert jobs[0].devin_run_id == "devin_test_001"
         mock_client.create_session.assert_awaited_once_with(
             bundle.prompt,
-            idempotency_key=bundle.bundle_hash,
+            idempotency_key=f"change-1-{bundle.bundle_hash}",
         )
 
     @pytest.mark.asyncio
