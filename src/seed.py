@@ -262,9 +262,9 @@ async def seed_contract_change_demo(db: AsyncSession):
         is_breaking=True,
         severity="high",
         summary_json=json.dumps({
-            "summary": "Added required 'priority' field to SessionCreate. "
-                       "Moved token fields under nested 'usage' object in SessionResponse. "
-                       "Renamed 'total_cost' to 'billing.total' (nested)."
+            "summary": "Added required 'max_cost_usd' field to SessionCreate. "
+                       "Renamed 'usage.cached_tokens' to 'usage.cache_read_tokens' in SessionResponse. "
+                       "Renamed 'billing.total' to 'billing.total_usd'."
         }),
         changed_routes_json=json.dumps([
             "POST /api/v1/sessions",
@@ -273,9 +273,9 @@ async def seed_contract_change_demo(db: AsyncSession):
             "PATCH /api/v1/sessions/{session_id}",
         ]),
         changed_fields_json=json.dumps([
-            {"route": "POST /api/v1/sessions", "field": "priority", "change": "added (required)"},
-            {"route": "GET /api/v1/sessions", "field": "usage", "change": "restructured from flat tokens"},
-            {"route": "GET /api/v1/sessions", "field": "billing.total", "change": "restructured from total_cost"},
+            {"route": "POST /api/v1/sessions", "field": "max_cost_usd", "change": "added (required)"},
+            {"route": "GET /api/v1/sessions", "field": "usage.cache_read_tokens", "change": "renamed from usage.cached_tokens"},
+            {"route": "GET /api/v1/sessions", "field": "billing.total_usd", "change": "renamed from billing.total"},
         ]),
     )
     db.add(change)

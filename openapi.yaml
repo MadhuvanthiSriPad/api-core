@@ -552,6 +552,7 @@ components:
         - team_id
         - agent_name
         - priority
+        - max_cost_usd
       properties:
         team_id:
           type: string
@@ -567,6 +568,9 @@ components:
             - medium
             - high
             - critical
+        max_cost_usd:
+          type: number
+          minimum: 0
         prompt:
           type: string
           nullable: true
@@ -597,12 +601,12 @@ components:
               type: integer
             output_tokens:
               type: integer
-            cached_tokens:
+            cache_read_tokens:
               type: integer
         billing:
           type: object
           properties:
-            total:
+            total_usd:
               type: number
         started_at:
           type: string
