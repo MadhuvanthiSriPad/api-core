@@ -51,10 +51,10 @@ jobs:
 
   deploy:
     needs: publish-image
-    if: ${{ secrets.DEPLOY_WEBHOOK_URL != '' }}
     runs-on: ubuntu-latest
     steps:
       - name: Trigger deployment webhook
+        if: ${{ env.DEPLOY_WEBHOOK_URL != '' }}
         env:
           DEPLOY_WEBHOOK_URL: ${{ secrets.DEPLOY_WEBHOOK_URL }}
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
