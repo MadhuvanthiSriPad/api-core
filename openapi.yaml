@@ -402,6 +402,109 @@ paths:
                 items:
                   $ref: "#/components/schemas/RouteCallResponse"
 
+  /api/v1/usage/service-health:
+    get:
+      operationId: getServiceHealth
+      summary: Per-service health summary derived from usage_requests telemetry
+      tags:
+        - usage
+      parameters:
+        - name: since_days
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 7
+            minimum: 1
+            maximum: 90
+      responses:
+        "200":
+          description: Per-service health summary
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ServiceHealthResponse"
+
+  /api/v1/usage/error-rates:
+    get:
+      operationId: getErrorRates
+      summary: Per-route error breakdown from usage_requests telemetry
+      tags:
+        - usage
+      parameters:
+        - name: since_days
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 7
+            minimum: 1
+            maximum: 90
+        - name: min_calls
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+            minimum: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 30
+            maximum: 100
+      responses:
+        "200":
+          description: Per-route error breakdown
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RouteErrorRateResponse"
+
+  /api/v1/usage/latency-percentiles:
+    get:
+      operationId: getLatencyPercentiles
+      summary: P50/P95/P99 latency per route
+      tags:
+        - usage
+      parameters:
+        - name: since_days
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 7
+            minimum: 1
+            maximum: 30
+        - name: min_calls
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 5
+            minimum: 2
+        - name: route_limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+            maximum: 50
+      responses:
+        "200":
+          description: Route latency percentile summary
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/LatencyPercentilesResponse"
+
   /api/v1/contracts/current:
     get:
       operationId: getCurrentContract
@@ -463,6 +566,48 @@ paths:
                 $ref: "#/components/schemas/ContractChangeDetailResponse"
         "404":
           description: Change not found
+
+  /api/v1/contracts/service-graph:
+    get:
+      operationId: getServiceGraph
+      summary: Return the service dependency graph with wave structure for visualization
+      tags:
+        - contracts
+      responses:
+        "200":
+          description: Service dependency graph
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceGraphResponse"
+
+  /api/v1/contracts/guardrails:
+    get:
+      operationId: getGuardrails
+      summary: Return the current propagation guardrails configuration
+      tags:
+        - contracts
+      responses:
+        "200":
+          description: Propagation guardrails configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GuardrailsResponse"
+
+  /api/v1/contracts/sync-status:
+    get:
+      operationId: getSyncStatus
+      summary: Return the current Devin sync configuration status
+      tags:
+        - contracts
+      responses:
+        "200":
+          description: Devin sync configuration status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SyncStatusResponse"
 
   /api/v1/contracts/live-jobs/sync:
     post:
@@ -825,6 +970,72 @@ components:
           type: string
           format: date-time
 
+    ServiceHealthResponse:
+      type: object
+      properties:
+        caller_service:
+          type: string
+        total_requests:
+          type: integer
+        error_4xx:
+          type: integer
+        error_5xx:
+          type: integer
+        error_rate_pct:
+          type: number
+        server_error_rate_pct:
+          type: number
+        avg_latency_ms:
+          type: number
+        uptime_pct:
+          type: number
+        last_seen:
+          type: string
+          format: date-time
+          nullable: true
+
+    RouteErrorRateResponse:
+      type: object
+      properties:
+        route_template:
+          type: string
+        method:
+          type: string
+        total_calls:
+          type: integer
+        success_2xx:
+          type: integer
+        client_errors_4xx:
+          type: integer
+        server_errors_5xx:
+          type: integer
+        error_rate_pct:
+          type: number
+        server_error_rate_pct:
+          type: number
+        avg_latency_ms:
+          type: number
+
+    LatencyPercentilesResponse:
+      type: object
+      properties:
+        route_template:
+          type: string
+        method:
+          type: string
+        sample_count:
+          type: integer
+        p50_ms:
+          type: number
+        p95_ms:
+          type: number
+        p99_ms:
+          type: number
+        avg_ms:
+          type: number
+        max_ms:
+          type: number
+
     ContractCurrentResponse:
       type: object
       properties:
@@ -836,6 +1047,86 @@ components:
           type: string
           format: date-time
           nullable: true
+
+    ServiceGraphResponse:
+      type: object
+      properties:
+        waves:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServiceGraphWave"
+        edges:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServiceGraphEdge"
+        services:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/ServiceGraphService"
+
+    ServiceGraphWave:
+      type: object
+      properties:
+        wave:
+          type: integer
+        services:
+          type: array
+          items:
+            type: string
+        role:
+          type: string
+
+    ServiceGraphEdge:
+      type: object
+      properties:
+        from:
+          type: string
+        to:
+          type: string
+
+    ServiceGraphService:
+      type: object
+      properties:
+        repo:
+          type: string
+        language:
+          type: string
+        client_paths:
+          type: array
+          items:
+            type: string
+        test_paths:
+          type: array
+          items:
+            type: string
+        frontend_paths:
+          type: array
+          items:
+            type: string
+
+    GuardrailsResponse:
+      type: object
+      properties:
+        max_parallel:
+          type: integer
+        protected_paths:
+          type: array
+          items:
+            type: string
+        ci_required:
+          type: boolean
+        auto_merge:
+          type: boolean
+
+    SyncStatusResponse:
+      type: object
+      properties:
+        devin_sync_enabled:
+          type: boolean
+        interval_seconds:
+          type: integer
+        devin_api_configured:
+          type: boolean
 
     ContractChangeResponse:
       type: object
@@ -916,6 +1207,23 @@ components:
         changed_fields_json:
           type: string
           nullable: true
+        affected_services:
+          type: integer
+          default: 0
+        affected_routes:
+          type: integer
+          default: 0
+        total_calls_last_7d:
+          type: integer
+          default: 0
+        impacted_services:
+          type: array
+          items:
+            type: string
+        changed_routes:
+          type: array
+          items:
+            type: string
         impact_sets:
           type: array
           items:
@@ -934,6 +1242,9 @@ components:
           type: string
         route_template:
           type: string
+        method:
+          type: string
+          nullable: true
         calls_last_7d:
           type: integer
         confidence:
