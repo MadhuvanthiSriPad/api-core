@@ -118,6 +118,62 @@ def _extract_prompt_summary(payload: dict) -> str:
     return "Live Devin remediation sync"
 
 
+def _build_recovery_complete(
+    change: ContractChange,
+    all_jobs: list,
+    service_map: dict,
+) -> dict:
+    """Build a recovery_complete webhook payload from a fully-green change."""
+    try:
+        summary = json.loads(change.summary_json or "{}").get("summary", "")
+    except Exception:
+        summary = ""
+    try:
+        changed_routes = json.loads(change.changed_routes_json or "[]")
+        if not isinstance(changed_routes, list):
+            changed_routes = []
+    except Exception:
+        changed_routes = []
+
+    job_details = []
+    for j in all_jobs:
+        svc_name = None
+        for sname, sinfo in service_map.items():
+            if _normalize_repo_url(sinfo.repo) == j.target_repo:
+                svc_name = sname
+                break
+        job_details.append({
+            "job_id": j.job_id,
+            "target_repo": j.target_repo or "",
+            "target_service": svc_name or (j.target_repo or "").split("/")[-1],
+            "pr_url": j.pr_url or "",
+            "started_at": j.created_at.isoformat() if j.created_at else "",
+            "resolved_at": j.updated_at.isoformat() if j.updated_at else "",
+        })
+
+    created_times = [j.created_at for j in all_jobs if j.created_at]
+    updated_times = [j.updated_at for j in all_jobs if j.updated_at]
+    mttr_seconds = 0
+    if created_times and updated_times:
+        mttr_seconds = max(0, int((max(updated_times) - min(created_times)).total_seconds()))
+
+    affected_services = [d["target_service"] for d in job_details if d["target_service"]]
+
+    return {
+        "event_type": "recovery_complete",
+        "change_id": change.id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "severity": change.severity or "high",
+        "is_breaking": bool(change.is_breaking),
+        "summary": summary,
+        "affected_services": affected_services,
+        "changed_routes": changed_routes,
+        "total_jobs": len(all_jobs),
+        "jobs": job_details,
+        "mttr_seconds": mttr_seconds,
+    }
+
+
 async def _latest_or_create_live_change(
     db: AsyncSession,
     summary: str,
@@ -314,6 +370,18 @@ async def sync_devin_sessions(
         # Fire notification webhooks after commit (fire-and-forget).
         for evt in pr_opened_events:
             await emit_webhook("/api/v1/webhooks/pr-opened", evt)
+
+        # If all jobs for this change are now green, fire recovery_complete.
+        # notification-service deduplicates via idempotency key so safe to fire on every sync.
+        if change is not None:
+            all_jobs_result = await db.execute(
+                select(RemediationJob).where(RemediationJob.change_id == change.id)
+            )
+            all_jobs = all_jobs_result.scalars().all()
+            if all_jobs and all(j.status == JobStatus.GREEN.value for j in all_jobs):
+                rc_payload = _build_recovery_complete(change, list(all_jobs), service_map)
+                await emit_webhook("/api/v1/webhooks/recovery-complete", rc_payload)
+
         return {
             "synced": imported + updated,
             "imported": imported,
