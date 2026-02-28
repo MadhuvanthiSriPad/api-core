@@ -144,6 +144,55 @@ class TestSyncDevin:
                 assert result["imported"] == 0
 
     @pytest.mark.asyncio
+    async def test_new_pr_opened_job_emits_webhook_with_real_job_id(self):
+        """Regression: newly imported pr_opened jobs must carry their DB-assigned
+        job_id in the webhook payload, not 0."""
+        mock_client = AsyncMock()
+        mock_client.list_sessions.return_value = [
+            {"session_id": "devin_billing_pr"},
+            {"session_id": "devin_dashboard_pr"},
+        ]
+        mock_client.get_session.side_effect = [
+            {
+                "session_id": "devin_billing_pr",
+                "status_enum": "stopped",
+                "structured_output": {
+                    "pull_request": {
+                        "url": "https://github.com/MadhuvanthiSriPad/billing-service/pull/10",
+                    }
+                },
+            },
+            {
+                "session_id": "devin_dashboard_pr",
+                "status_enum": "stopped",
+                "structured_output": {
+                    "pull_request": {
+                        "url": "https://github.com/MadhuvanthiSriPad/dashboard-service/pull/20",
+                    }
+                },
+            },
+        ]
+
+        emitted_payloads: list[dict] = []
+
+        async def capture_webhook(path: str, payload: dict) -> None:
+            emitted_payloads.append(payload)
+
+        with patch("propagate.sync_devin.DevinClient", return_value=mock_client), \
+             patch("propagate.sync_devin.load_service_map", return_value=_service_map()), \
+             patch("propagate.sync_devin.emit_webhook", side_effect=capture_webhook):
+            async with TestSession() as db:
+                result = await sync_devin_sessions(db=db, limit=10, include_terminal=True)
+                assert result["imported"] == 2
+
+        # Each webhook must carry a unique, non-zero job_id.
+        pr_opened_payloads = [p for p in emitted_payloads if p.get("event_type") == "pr_opened"]
+        assert len(pr_opened_payloads) == 2, f"Expected 2 pr_opened webhooks, got {len(pr_opened_payloads)}"
+        job_ids = [p["job_id"] for p in pr_opened_payloads]
+        assert all(jid != 0 for jid in job_ids), f"job_id must not be 0: {job_ids}"
+        assert len(set(job_ids)) == 2, f"job_ids must be unique across downstream PRs: {job_ids}"
+
+    @pytest.mark.asyncio
     async def test_sync_change_summary_uses_devin_change_description(self):
         mock_client = AsyncMock()
         mock_client.list_sessions.return_value = [{"session_id": "devin_desc"}]

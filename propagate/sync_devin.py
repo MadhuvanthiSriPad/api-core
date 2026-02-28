@@ -305,13 +305,14 @@ async def sync_devin_sessions(
                         pr_url=pr_url,
                     )
                     db.add(job)
+                    await db.flush()  # assign job_id before building webhook payload
                     imported += 1
                     # New job created with PR already open → notify.
                     if mapped == JobStatus.PR_OPENED.value and pr_url:
                         pr_opened_events.append({
                             "event_type": "pr_opened",
                             "change_id": change.id,
-                            "job_id": 0,  # will be set after flush
+                            "job_id": job.job_id,
                             "timestamp": datetime.now(timezone.utc).isoformat(),
                             "target_repo": repo,
                             "target_service": _svc_name or repo.split("/")[-1],
