@@ -26,6 +26,11 @@ from src.entities.remediation_job import RemediationJob, JobStatus
 logger = logging.getLogger(__name__)
 
 CI_UNKNOWN_MAX_ATTEMPTS = 5  # After this many polls with "unknown" CI, fail closed
+TERMINAL_STATUSES = {
+    JobStatus.GREEN.value,
+    JobStatus.CI_FAILED.value,
+    JobStatus.NEEDS_HUMAN.value,
+}
 
 
 async def _fetch_github_ci_status(pr_url: str) -> tuple[bool, str]:

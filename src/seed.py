@@ -213,49 +213,14 @@ DASHBOARD_ROUTES = [
 BILLING_WEIGHTS = [6, 4, 3, 2, 2, 3]
 DASHBOARD_WEIGHTS = [5, 3, 2, 4, 3, 2, 2, 2, 2, 2, 2, 1]
 
-REPORTING_ROUTES = [
-    ("GET", "/api/v1/analytics/token-usage/daily"),
-    ("GET", "/api/v1/analytics/cost-by-team"),
-    ("GET", "/api/v1/sessions"),
-    ("GET", "/api/v1/sessions/{session_id}"),
-    ("GET", "/api/v1/invoices"),
-]
-REPORTING_WEIGHTS = [5, 5, 4, 2, 3]
-
-RISK_ROUTES = [
-    ("GET", "/api/v1/sessions"),
-    ("GET", "/api/v1/sessions/stats"),
-    ("GET", "/api/v1/usage/service-health"),
-    ("GET", "/api/v1/usage/error-rates"),
-    ("GET", "/api/v1/contracts/changes"),
-]
-RISK_WEIGHTS = [4, 3, 3, 3, 2]
-
-SUPPORT_ROUTES = [
-    ("GET", "/api/v1/sessions"),
-    ("GET", "/api/v1/sessions/{session_id}"),
-    ("PATCH", "/api/v1/sessions/{session_id}"),
-    ("GET", "/api/v1/teams"),
-    ("GET", "/api/v1/contracts/changes"),
-]
-SUPPORT_WEIGHTS = [4, 4, 2, 2, 1]
-
-OPS_ROUTES = [
-    ("GET", "/api/v1/usage/top-routes"),
-    ("GET", "/api/v1/usage/top-callers"),
-    ("GET", "/api/v1/usage/service-health"),
-    ("GET", "/api/v1/usage/latency-percentiles"),
-    ("GET", "/api/v1/contracts/service-graph"),
-]
-OPS_WEIGHTS = [2, 2, 3, 3, 1]
-
 NOTIFICATION_ROUTES = [
     ("GET", "/api/v1/sessions/{session_id}"),
     ("GET", "/api/v1/sessions/stats"),
     ("GET", "/api/v1/teams"),
+    ("GET", "/api/v1/analytics/token-usage/daily"),
     ("GET", "/api/v1/contracts/changes"),
 ]
-NOTIFICATION_WEIGHTS = [5, 3, 2, 1]
+NOTIFICATION_WEIGHTS = [5, 3, 2, 2, 1]
 
 
 async def seed_usage_requests(db: AsyncSession):
@@ -337,45 +302,6 @@ async def seed_usage_requests(db: AsyncSession):
             latency_range=(8, 210),
         )
 
-        num_reporting = random.randint(75, 140) if weekday < 5 else random.randint(28, 70)
-        await add_requests(
-            caller_service="reporting-service",
-            routes=REPORTING_ROUTES,
-            weights=REPORTING_WEIGHTS,
-            count=num_reporting,
-            day_start=day_start,
-            hour_weights=[1, 1, 1, 1, 1, 1, 1, 2, 4, 6, 8, 9, 9, 8, 7, 6, 4, 3, 2, 1, 1, 1, 1, 1],
-            status_population=[200, 206, 400, 429, 500],
-            status_weights=[82, 7, 4, 4, 3],
-            latency_range=(20, 420),
-        )
-
-        num_risk = random.randint(54, 110) if weekday < 5 else random.randint(20, 48)
-        await add_requests(
-            caller_service="risk-engine",
-            routes=RISK_ROUTES,
-            weights=RISK_WEIGHTS,
-            count=num_risk,
-            day_start=day_start,
-            hour_weights=[1, 1, 1, 1, 1, 1, 1, 2, 4, 6, 7, 8, 8, 8, 7, 6, 5, 4, 3, 2, 1, 1, 1, 1],
-            status_population=[200, 202, 400, 429, 500],
-            status_weights=[80, 8, 5, 4, 3],
-            latency_range=(24, 390),
-        )
-
-        num_support = random.randint(42, 95) if weekday < 5 else random.randint(18, 40)
-        await add_requests(
-            caller_service="support-automation",
-            routes=SUPPORT_ROUTES,
-            weights=SUPPORT_WEIGHTS,
-            count=num_support,
-            day_start=day_start,
-            hour_weights=[1, 1, 1, 1, 1, 1, 2, 4, 6, 7, 8, 8, 8, 7, 7, 6, 5, 4, 3, 2, 1, 1, 1, 1],
-            status_population=[200, 202, 400, 404, 500],
-            status_weights=[81, 8, 5, 4, 2],
-            latency_range=(16, 240),
-        )
-
         num_notification = random.randint(48, 102) if weekday < 5 else random.randint(18, 42)
         await add_requests(
             caller_service="notification-service",
@@ -387,19 +313,6 @@ async def seed_usage_requests(db: AsyncSession):
             status_population=[200, 202, 400, 404, 500],
             status_weights=[84, 6, 4, 4, 2],
             latency_range=(14, 220),
-        )
-
-        num_ops = random.randint(28, 66) if weekday < 5 else random.randint(10, 24)
-        await add_requests(
-            caller_service="ops-console",
-            routes=OPS_ROUTES,
-            weights=OPS_WEIGHTS,
-            count=num_ops,
-            day_start=day_start,
-            hour_weights=[1, 1, 1, 1, 1, 1, 1, 2, 4, 6, 8, 8, 8, 8, 7, 6, 5, 4, 3, 2, 1, 1, 1, 1],
-            status_population=[200, 304, 404, 429, 503],
-            status_weights=[82, 8, 4, 3, 3],
-            latency_range=(10, 180),
         )
 
     await db.commit()

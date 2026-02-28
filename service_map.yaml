@@ -28,10 +28,7 @@ services:
     language: python
     depends_on:
       - "api-core"
-      - "billing-service"
     client_paths:
-      - "src/clients/api_core.py"
-      - "src/clients/billing.py"
-      - "src/routes/notifications.py"
+      - "src/routes/webhooks.py"
     test_paths:
       - "tests/"
