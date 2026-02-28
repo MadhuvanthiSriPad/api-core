@@ -297,7 +297,7 @@ async def sync_devin_sessions(
                         pr_opened_events.append({
                             "event_type": "pr_opened",
                             "change_id": change.id if change else 0,
-                            "job_id": job.id or 0,
+                            "job_id": job.job_id or 0,
                             "timestamp": datetime.now(timezone.utc).isoformat(),
                             "target_repo": repo,
                             "target_service": _svc_name or repo.split("/")[-1],
