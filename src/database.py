@@ -3,6 +3,7 @@
 import logging
 from pathlib import Path
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 
@@ -36,7 +37,28 @@ if "sqlite" in settings.database_url and "mode=memory" not in settings.database_
         "Set API_CORE_DATABASE_URL to a Postgres URL for production."
     )
 
-engine = create_async_engine(settings.database_url, echo=settings.debug)
+if "sqlite" in settings.database_url:
+    # Increase lock wait to absorb short concurrent write bursts in demo/dev mode.
+    engine = create_async_engine(
+        settings.database_url,
+        echo=settings.debug,
+        connect_args={"timeout": 30},
+    )
+else:
+    engine = create_async_engine(settings.database_url, echo=settings.debug)
+
+
+if "sqlite" in settings.database_url:
+    @event.listens_for(engine.sync_engine, "connect")
+    def _set_sqlite_pragmas(dbapi_connection, _connection_record) -> None:
+        cursor = dbapi_connection.cursor()
+        # WAL allows readers and a single writer concurrently, reducing lock errors.
+        cursor.execute("PRAGMA journal_mode=WAL;")
+        cursor.execute("PRAGMA synchronous=NORMAL;")
+        cursor.execute("PRAGMA busy_timeout=30000;")
+        cursor.execute("PRAGMA foreign_keys=ON;")
+        cursor.close()
+
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 

@@ -137,3 +137,35 @@ class TestDispatchOne:
         assert len(jobs) == 1
         assert jobs[0].status == JobStatus.NEEDS_HUMAN.value
         assert "API timeout" in jobs[0].error_summary
+
+    @pytest.mark.asyncio
+    async def test_dispatch_includes_wave_context_when_provided(self):
+        """Wave context should be forwarded at session creation for downstream waves."""
+        bundle = _bundle()
+        guardrails = Guardrails()
+        wave_context = {
+            "type": "wave-context",
+            "wave_index": 2,
+            "source_wave_index": 1,
+            "notable_patterns": ["updated API client callsites"],
+        }
+
+        mock_client = AsyncMock()
+        mock_client.create_session.return_value = {"session_id": "devin_test_002"}
+
+        with patch("propagate.dispatcher.async_session_factory", TestSession), \
+             patch("propagate.dispatcher.DevinClient", return_value=mock_client):
+            jobs = await dispatch_remediation_jobs(
+                [bundle],
+                guardrails,
+                change_id=1,
+                wave_context_payload=wave_context,
+            )
+
+        assert len(jobs) == 1
+        assert jobs[0].status == JobStatus.RUNNING.value
+        mock_client.create_session.assert_awaited_once_with(
+            bundle.prompt,
+            idempotency_key=f"change-1-{bundle.bundle_hash}",
+            wave_context=wave_context,
+        )

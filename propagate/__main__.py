@@ -19,6 +19,7 @@ import random
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -40,13 +41,214 @@ from src.database import async_session, init_db
 from src.entities.contract_snapshot import ContractSnapshot
 from src.entities.contract_change import ContractChange
 from src.entities.impact_set import ImpactSet
-from src.entities.remediation_job import RemediationJob
+from src.entities.remediation_job import RemediationJob, JobStatus
 
 
 CONTRACT_PATH = Path(__file__).resolve().parent.parent / "openapi.yaml"
 
 WAVE_POLL_INTERVAL = 30  # seconds between wave completion polls
 WAVE_MAX_POLLS = 60      # max polls (30 min timeout)
+
+
+def _dedupe_keep_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        norm = value.strip()
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        result.append(norm)
+    return result
+
+
+def _as_string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [str(v) for v in value if isinstance(v, (str, int, float))]
+    return []
+
+
+def _infer_patterns_from_files(changed_files: list[str]) -> list[str]:
+    patterns: list[str] = []
+    lowered = [path.lower() for path in changed_files]
+
+    if any(
+        token in path
+        for path in lowered
+        for token in ("client", "gateway", "http", "api/")
+    ):
+        patterns.append("updated API client callsites")
+    if any(
+        token in path
+        for path in lowered
+        for token in ("schema", "pydantic", "types", "dto")
+    ):
+        patterns.append("updated schema/type contracts")
+    if any(
+        token in path
+        for path in lowered
+        for token in ("route", "handler", "service")
+    ):
+        patterns.append("updated business logic adapters")
+    if any(
+        token in path
+        for path in lowered
+        for token in ("test", "spec", "fixture", "conftest")
+    ):
+        patterns.append("updated tests/fixtures for contract compatibility")
+
+    return patterns
+
+
+def _extract_fix_insights(session_payload: dict[str, Any]) -> dict[str, Any]:
+    structured = session_payload.get("structured_output")
+    if not isinstance(structured, dict):
+        structured = {}
+
+    changed_files: list[str] = []
+    for key in ("changed_files", "files_changed", "modified_files"):
+        changed_files.extend(_as_string_list(structured.get(key)))
+        changed_files.extend(_as_string_list(session_payload.get(key)))
+    changes = structured.get("changes")
+    if isinstance(changes, list):
+        for change in changes:
+            if isinstance(change, dict):
+                changed_files.extend(_as_string_list(change.get("files")))
+                changed_files.extend(_as_string_list(change.get("changed_files")))
+    changed_files = _dedupe_keep_order(changed_files)
+
+    explicit_patterns: list[str] = []
+    for key in ("patterns_used", "applied_patterns", "fix_patterns"):
+        explicit_patterns.extend(_as_string_list(structured.get(key)))
+        explicit_patterns.extend(_as_string_list(session_payload.get(key)))
+
+    test_fixtures_changed: list[str] = []
+    for key in ("test_fixtures_changed", "fixtures_changed"):
+        test_fixtures_changed.extend(_as_string_list(structured.get(key)))
+        test_fixtures_changed.extend(_as_string_list(session_payload.get(key)))
+    if not test_fixtures_changed:
+        test_fixtures_changed = [
+            path
+            for path in changed_files
+            if any(token in path.lower() for token in ("/fixtures/", "\\fixtures\\", "fixture", "conftest.py"))
+        ]
+    test_fixtures_changed = _dedupe_keep_order(test_fixtures_changed)
+
+    change_summary = ""
+    for key in ("change_summary", "summary", "fix_summary", "result_summary"):
+        value = structured.get(key)
+        if isinstance(value, str) and value.strip():
+            change_summary = value.strip()
+            break
+        value = session_payload.get(key)
+        if isinstance(value, str) and value.strip():
+            change_summary = value.strip()
+            break
+
+    patterns_used = _dedupe_keep_order(explicit_patterns + _infer_patterns_from_files(changed_files))
+
+    return {
+        "patterns_used": patterns_used,
+        "test_fixtures_changed": test_fixtures_changed,
+        "changed_files": changed_files,
+        "change_summary": change_summary,
+    }
+
+
+async def _build_wave_context_payload(job_ids: list[int], wave_idx: int) -> dict[str, Any] | None:
+    """Build structured context from completed wave outputs for the next wave."""
+    if not job_ids:
+        return None
+
+    from sqlalchemy import select
+
+    async with async_session() as db:
+        result = await db.execute(
+            select(RemediationJob).where(RemediationJob.job_id.in_(job_ids))
+        )
+        finished_jobs = list(result.scalars().all())
+
+    if not finished_jobs:
+        return None
+
+    client: DevinClient | None = None
+    try:
+        client = DevinClient()
+    except Exception:
+        client = None
+
+    async def build_one(job: RemediationJob) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if client is not None and job.devin_run_id:
+            try:
+                payload = await client.get_session(job.devin_run_id)
+            except Exception:
+                payload = {}
+        insights = _extract_fix_insights(payload)
+        repo_name = job.target_repo.rstrip("/").split("/")[-1] or job.target_repo
+        return {
+            "repo": repo_name,
+            "status": job.status,
+            "pr_url": job.pr_url,
+            "patterns_used": insights["patterns_used"],
+            "test_fixtures_changed": insights["test_fixtures_changed"],
+            "changed_files": insights["changed_files"],
+            "change_summary": insights["change_summary"],
+        }
+
+    try:
+        upstream_fix_summaries = list(await asyncio.gather(*(build_one(job) for job in finished_jobs)))
+    finally:
+        if client is not None:
+            await client.close()
+
+    notable_patterns = _dedupe_keep_order(
+        [
+            pattern
+            for item in upstream_fix_summaries
+            for pattern in item.get("patterns_used", [])
+            if isinstance(pattern, str)
+        ]
+    )
+    test_fixtures_changed = _dedupe_keep_order(
+        [
+            fixture
+            for item in upstream_fix_summaries
+            for fixture in item.get("test_fixtures_changed", [])
+            if isinstance(fixture, str)
+        ]
+    )
+    ci_green_prs = [
+        item["pr_url"]
+        for item in upstream_fix_summaries
+        if item.get("status") == JobStatus.GREEN.value and isinstance(item.get("pr_url"), str) and item["pr_url"]
+    ]
+
+    status_parts = [
+        f"{item['repo']}: {str(item.get('status', '')).upper()}" + (f" ({item['pr_url']})" if item.get("pr_url") else "")
+        for item in upstream_fix_summaries
+    ]
+    summary_parts = [
+        f"Wave {wave_idx} complete.",
+        f"Upstream remediation status: {'; '.join(status_parts)}.",
+    ]
+    if notable_patterns:
+        summary_parts.append(f"Patterns used upstream: {', '.join(notable_patterns)}.")
+    if test_fixtures_changed:
+        summary_parts.append(f"Test fixtures updated upstream: {', '.join(test_fixtures_changed)}.")
+    summary_parts.append("Use these upstream outcomes as context before selecting your remediation strategy.")
+    summary_text = " ".join(summary_parts)
+
+    return {
+        "source_wave_index": wave_idx,
+        "upstream_fix_summaries": upstream_fix_summaries,
+        "notable_patterns": notable_patterns,
+        "test_fixtures_changed": test_fixtures_changed,
+        "ci_green_prs": ci_green_prs,
+        "summary_text": summary_text,
+    }
 
 
 async def _wait_for_wave_completion(job_ids: list[int], wave_idx: int) -> bool:
@@ -81,47 +283,34 @@ async def _wait_for_wave_completion(job_ids: list[int], wave_idx: int) -> bool:
     return False
 
 
-async def _build_wave_context_message(job_ids: list[int], wave_idx: int) -> str | None:
-    """Create a short status summary that can be sent to the next wave."""
-    if not job_ids:
-        return None
-
-    from sqlalchemy import select
-
-    async with async_session() as db:
-        result = await db.execute(
-            select(RemediationJob).where(RemediationJob.job_id.in_(job_ids))
-        )
-        finished_jobs = list(result.scalars().all())
-
-    if not finished_jobs:
-        return None
-
-    parts = []
-    for job in finished_jobs:
-        repo_name = job.target_repo.rstrip("/").split("/")[-1] or job.target_repo
-        pr_segment = f" ({job.pr_url})" if job.pr_url else ""
-        parts.append(f"{repo_name}: {job.status.upper()}{pr_segment}")
-
-    return (
-        f"Wave {wave_idx} complete. "
-        f"Upstream remediation status: {'; '.join(parts)}. "
-        "Upstream contracts are now stable where CI is GREEN."
-    )
-
-
 async def _send_context_to_wave(
     wave_jobs: list[RemediationJob],
     wave_idx: int,
-    context_message: str | None,
+    context_payload: dict[str, Any] | None,
 ) -> None:
     """Send prior-wave context to each newly-dispatched job in this wave."""
-    if not context_message:
+    if not context_payload:
         return
 
     session_ids = [job.devin_run_id for job in wave_jobs if job.devin_run_id]
     if not session_ids:
         return
+
+    source_wave_index = context_payload.get("source_wave_index")
+    summary_text = context_payload.get("summary_text")
+    if not isinstance(summary_text, str) or not summary_text.strip():
+        source_label = source_wave_index if isinstance(source_wave_index, int) else "previous"
+        summary_text = f"Wave {source_label} complete. Use upstream remediation outcomes as context."
+
+    wave_context = {
+        "type": "wave-context",
+        "wave_index": wave_idx,
+        "source_wave_index": source_wave_index,
+        "upstream_fix_summaries": context_payload.get("upstream_fix_summaries", []),
+        "notable_patterns": context_payload.get("notable_patterns", []),
+        "test_fixtures_changed": context_payload.get("test_fixtures_changed", []),
+        "ci_green_prs": context_payload.get("ci_green_prs", []),
+    }
 
     client = DevinClient()
     print(f"  Sending prior-wave context to wave {wave_idx} ({len(session_ids)} session(s))...")
@@ -130,16 +319,16 @@ async def _send_context_to_wave(
         try:
             await client.send_message(
                 session_id,
-                context_message,
-                wave_context={
-                    "type": "wave-context",
-                    "wave_index": wave_idx,
-                },
+                summary_text,
+                wave_context=wave_context,
             )
         except Exception as e:
             print(f"    Context message failed for {session_id}: {e}")
 
-    await asyncio.gather(*(send_one(session_id) for session_id in session_ids))
+    try:
+        await asyncio.gather(*(send_one(session_id) for session_id in session_ids))
+    finally:
+        await client.close()
 
 
 async def main(dry_run: bool = False, no_wait: bool = False, ci: bool = False):
@@ -405,7 +594,7 @@ async def main(dry_run: bool = False, no_wait: bool = False, ci: bool = False):
             print(f"\n  Totals: {green} GREEN, {failed} CI_FAILED, {human} NEEDS_HUMAN")
             print(f"\n[DRY-RUN] Pipeline complete. {len(bundles)} bundle(s) simulated.")
         else:
-            next_wave_context: str | None = None
+            next_wave_context: dict[str, Any] | None = None
             for wave_idx, wave_services in enumerate(waves):
                 wave_bundles = [
                     bundle_by_service[svc]
@@ -416,7 +605,7 @@ async def main(dry_run: bool = False, no_wait: bool = False, ci: bool = False):
                     continue
                 print(f"\n  Wave {wave_idx}: {[b.target_service for b in wave_bundles]}")
                 wave_jobs = await dispatch_remediation_jobs(
-                    wave_bundles, guardrails, change.id
+                    wave_bundles, guardrails, change.id, wave_context_payload=next_wave_context
                 )
                 jobs.extend(wave_jobs)
 
@@ -424,7 +613,7 @@ async def main(dry_run: bool = False, no_wait: bool = False, ci: bool = False):
                 await _send_context_to_wave(
                     wave_jobs=wave_jobs,
                     wave_idx=wave_idx,
-                    context_message=next_wave_context,
+                    context_payload=next_wave_context,
                 )
 
                 # Wait for wave completion before proceeding (including the final wave)
@@ -435,7 +624,7 @@ async def main(dry_run: bool = False, no_wait: bool = False, ci: bool = False):
                         print(f"\n  Waiting for wave {wave_idx} to complete before {next_label}...")
                         await _wait_for_wave_completion(dispatched_ids, wave_idx)
                         if wave_idx < len(waves) - 1:
-                            next_wave_context = await _build_wave_context_message(
+                            next_wave_context = await _build_wave_context_payload(
                                 dispatched_ids, wave_idx
                             )
 

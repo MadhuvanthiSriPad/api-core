@@ -45,6 +45,7 @@ async def dispatch_remediation_jobs(
     bundles: list[RepoFixBundle],
     guardrails: Guardrails,
     change_id: int,
+    wave_context_payload: dict | None = None,
 ) -> list[RemediationJob]:
     """Dispatch Devin jobs concurrently, then return immediately.
 
@@ -105,11 +106,16 @@ async def dispatch_remediation_jobs(
                     await _log_transition(own_db, job, old, JobStatus.RUNNING.value, "Dispatching to Devin")
                     await own_db.flush()
 
-                    session = await client.create_session(
-                        bundle.prompt,
+                    create_kwargs = {
                         # Scope idempotency to this contract change so reruns on
                         # newer changes do not reuse stale sessions.
-                        idempotency_key=f"change-{change_id}-{bundle.bundle_hash}",
+                        "idempotency_key": f"change-{change_id}-{bundle.bundle_hash}",
+                    }
+                    if wave_context_payload is not None:
+                        create_kwargs["wave_context"] = wave_context_payload
+                    session = await client.create_session(
+                        bundle.prompt,
+                        **create_kwargs,
                     )
                     job.devin_run_id = session.get("session_id", "")
                     await own_db.flush()

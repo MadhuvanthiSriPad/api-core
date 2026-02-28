@@ -10,10 +10,12 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 
 from src.database import Base, get_db
 from src.main import app
+from src.routes import contracts as contracts_routes
 from src.entities import (
     AgentSession,
     ContractChange,
     ImpactSet,
+    RemediationJob,
     Team,
     TokenUsage,
     UsageRequest,
@@ -258,6 +260,43 @@ class TestUsageTelemetry:
         assert "billing-service" in callers
 
     @pytest.mark.asyncio
+    async def test_top_callers_respects_service_map_visibility(self, client):
+        async with TestSession() as db:
+            db.add_all(
+                [
+                    UsageRequest(
+                        caller_service="dashboard-service",
+                        method="GET",
+                        route_template="/api/v1/sessions/stats",
+                        status_code=200,
+                        duration_ms=1.0,
+                    ),
+                    UsageRequest(
+                        caller_service="dashboard-service",
+                        method="GET",
+                        route_template="/api/v1/teams",
+                        status_code=200,
+                        duration_ms=1.0,
+                    ),
+                    UsageRequest(
+                        caller_service="billing-service",
+                        method="GET",
+                        route_template="/api/v1/sessions/stats",
+                        status_code=200,
+                        duration_ms=2.0,
+                    ),
+                ]
+            )
+            await db.commit()
+
+        resp = await client.get("/api/v1/usage/top-callers")
+        assert resp.status_code == 200
+        payload = resp.json()
+        callers = {row["caller_service"] for row in payload}
+        assert "dashboard-service" not in callers
+        assert "billing-service" in callers
+
+    @pytest.mark.asyncio
     async def test_route_calls_excludes_unknown_by_default(self, client):
         async with TestSession() as db:
             db.add_all(
@@ -358,6 +397,94 @@ class TestContracts:
         assert sorted(data["impacted_services"]) == ["billing-service", "dashboard-service"]
         assert len(data["changed_routes"]) == 4
         assert {row["method"] for row in data["impact_sets"]} == {"GET", "PATCH", "POST"}
+
+    @pytest.mark.asyncio
+    async def test_contract_change_detail_prefers_best_visible_job_per_repo(self, client):
+        async with TestSession() as db:
+            change = ContractChange(
+                is_breaking=True,
+                severity="high",
+                summary_json=json.dumps({"summary": "repo jobs"}),
+                changed_routes_json="[]",
+                changed_fields_json="[]",
+            )
+            db.add(change)
+            await db.flush()
+            db.add_all(
+                [
+                    RemediationJob(
+                        change_id=change.id,
+                        target_repo="https://github.com/example/billing-service",
+                        status="green",
+                        pr_url="https://github.com/example/billing-service/pull/42",
+                    ),
+                    RemediationJob(
+                        change_id=change.id,
+                        target_repo="https://github.com/example/billing-service",
+                        status="ci_failed",
+                        pr_url="https://github.com/example/billing-service/pull/43",
+                    ),
+                    RemediationJob(
+                        change_id=change.id,
+                        target_repo="https://github.com/example/dashboard-service",
+                        status="pr_opened",
+                        pr_url="https://github.com/example/dashboard-service/pull/17",
+                    ),
+                    RemediationJob(
+                        change_id=change.id,
+                        target_repo="https://github.com/example/dashboard-service",
+                        status="needs_human",
+                        pr_url=None,
+                    ),
+                ]
+            )
+            await db.commit()
+            change_id = change.id
+
+        resp = await client.get(f"/api/v1/contracts/changes/{change_id}")
+        assert resp.status_code == 200
+        jobs = {row["target_repo"]: row for row in resp.json()["remediation_jobs"]}
+        assert jobs["https://github.com/example/billing-service"]["status"] == "green"
+        assert jobs["https://github.com/example/billing-service"]["pr_url"].endswith("/pull/42")
+        assert jobs["https://github.com/example/dashboard-service"]["status"] == "pr_opened"
+        assert jobs["https://github.com/example/dashboard-service"]["pr_url"].endswith("/pull/17")
+
+    @pytest.mark.asyncio
+    async def test_live_jobs_sync_combines_devin_and_status_updates(self, client, monkeypatch):
+        async def fake_sync_devin_sessions(db, limit=50, include_terminal=True):
+            return {
+                "synced": 2,
+                "imported": 1,
+                "updated": 1,
+                "skipped": 0,
+                "total_fetched": 2,
+                "change_id": 42,
+            }
+
+        async def fake_sync_job_statuses(db, change_id=None, log_progress=False):
+            assert change_id == 42
+            return {
+                "checked": 2,
+                "updated": 2,
+                "green": 2,
+                "pr_opened": 0,
+                "ci_failed": 0,
+                "needs_human": 0,
+                "running": 0,
+            }
+
+        monkeypatch.setattr(contracts_routes, "sync_devin_sessions", fake_sync_devin_sessions)
+        monkeypatch.setattr(contracts_routes, "sync_job_statuses", fake_sync_job_statuses)
+        contracts_routes._last_sync_time = 0
+
+        resp = await client.post("/api/v1/contracts/live-jobs/sync")
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["imported"] == 1
+        assert payload["updated"] == 3
+        assert payload["status_checked"] == 2
+        assert payload["status_updated"] == 2
+        assert payload["status_green"] == 2
 
 
 class TestApiKeyAuth:

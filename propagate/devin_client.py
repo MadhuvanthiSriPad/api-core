@@ -87,7 +87,12 @@ class DevinClient:
         # Should not reach here, but satisfy type checker
         raise last_exc  # type: ignore[misc]
 
-    async def create_session(self, prompt: str, idempotency_key: str | None = None) -> dict:
+    async def create_session(
+        self,
+        prompt: str,
+        idempotency_key: str | None = None,
+        wave_context: dict | None = None,
+    ) -> dict:
         """Create a new Devin session with a task prompt.
 
         Returns the session response including session_id.
@@ -95,6 +100,8 @@ class DevinClient:
         payload = {"prompt": prompt}
         if idempotency_key:
             payload["idempotency_key"] = idempotency_key
+        if wave_context:
+            payload["wave_context"] = wave_context
         resp = await self._request_with_retry(
             "post",
             f"{self.base_url}/sessions",

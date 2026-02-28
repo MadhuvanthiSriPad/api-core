@@ -13,6 +13,7 @@ services:
   dashboard-service:
     repo: "https://github.com/MadhuvanthiSriPad/dashboard-service"
     language: python
+    include_in_top_callers: false
     depends_on:
       - "api-core"
     client_paths:
@@ -21,3 +22,16 @@ services:
       - "tests/"
     frontend_paths:
       - "frontend/src/"
+
+  notification-service:
+    repo: "https://github.com/MadhuvanthiSriPad/notification-service"
+    language: python
+    depends_on:
+      - "api-core"
+      - "billing-service"
+    client_paths:
+      - "src/clients/api_core.py"
+      - "src/clients/billing.py"
+      - "src/routes/notifications.py"
+    test_paths:
+      - "tests/"

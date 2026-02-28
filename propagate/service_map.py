@@ -16,6 +16,7 @@ class ServiceInfo:
     test_paths: list[str] = field(default_factory=list)
     frontend_paths: list[str] = field(default_factory=list)
     depends_on: list[str] = field(default_factory=list)
+    include_in_top_callers: bool = True
 
 
 def load_service_map(path: str | None = None) -> dict[str, ServiceInfo]:
@@ -35,5 +36,6 @@ def load_service_map(path: str | None = None) -> dict[str, ServiceInfo]:
             test_paths=svc_data.get("test_paths", []),
             frontend_paths=svc_data.get("frontend_paths", []),
             depends_on=svc_data.get("depends_on", []),
+            include_in_top_callers=svc_data.get("include_in_top_callers", True),
         )
     return result

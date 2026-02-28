@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from collections.abc import Iterable
 from pathlib import Path
@@ -15,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.database import get_db
+from propagate.check_status import sync_job_statuses
 from propagate.sync_devin import sync_devin_sessions
 from src.entities.contract_change import ContractChange
 from src.entities.impact_set import ImpactSet
@@ -33,20 +35,44 @@ _SYNC_COOLDOWN = 30  # seconds between sync calls
 _last_sync_time: float = 0.0
 
 CONTRACT_PATH = Path(__file__).resolve().parent.parent.parent / "openapi.yaml"
+_JOB_STATUS_PRIORITY = {
+    "green": 5,
+    "pr_opened": 4,
+    "running": 3,
+    "queued": 2,
+    "needs_human": 1,
+    "ci_failed": 0,
+}
 
 
 def _dedupe_jobs_by_repo(jobs: Iterable[RemediationJob]) -> list[RemediationJob]:
-    """Return latest remediation job per target repo."""
+    """Return the best current remediation view per repo.
+
+    Multiple historical jobs can exist for the same repository. For dashboard
+    rendering we prefer the most progressed visible state for that repo rather
+    than blindly taking the latest timestamp, because stale duplicate rows can
+    otherwise hide a newer PR/green state behind an older sync artifact.
+    """
     by_repo: dict[str, RemediationJob] = {}
-    # Latest updates should win.
-    ordered = sorted(
-        jobs,
-        key=lambda job: job.updated_at or job.created_at,
-        reverse=True,
-    )
-    for job in ordered:
+
+    def pr_number(job: RemediationJob) -> int:
+        if not job.pr_url:
+            return -1
+        match = re.search(r"/pull/(\d+)", job.pr_url)
+        return int(match.group(1)) if match else -1
+
+    def sort_key(job: RemediationJob) -> tuple[int, int, int, object]:
+        return (
+            _JOB_STATUS_PRIORITY.get(job.status, -1),
+            1 if job.pr_url else 0,
+            pr_number(job),
+            job.updated_at or job.created_at,
+        )
+
+    for job in jobs:
         repo_key = job.target_repo or f"job-{job.job_id}"
-        if repo_key not in by_repo:
+        current = by_repo.get(repo_key)
+        if current is None or sort_key(job) > sort_key(current):
             by_repo[repo_key] = job
     return sorted(
         by_repo.values(),
@@ -171,11 +197,25 @@ async def sync_live_jobs(
         remaining = int(_SYNC_COOLDOWN - (now - _last_sync_time))
         raise HTTPException(status_code=429, detail=f"Sync cooldown: retry in {remaining}s")
     _last_sync_time = now
-    return await sync_devin_sessions(
+    devin_result = await sync_devin_sessions(
         db=db,
         limit=limit,
         include_terminal=include_terminal,
     )
+    status_result = await sync_job_statuses(
+        db=db,
+        change_id=devin_result.get("change_id"),
+    )
+    return {
+        **devin_result,
+        "updated": int(devin_result.get("updated", 0)) + int(status_result.get("updated", 0)),
+        "status_checked": status_result.get("checked", 0),
+        "status_updated": status_result.get("updated", 0),
+        "status_green": status_result.get("green", 0),
+        "status_pr_opened": status_result.get("pr_opened", 0),
+        "status_ci_failed": status_result.get("ci_failed", 0),
+        "status_needs_human": status_result.get("needs_human", 0),
+    }
 
 
 @router.get("/changes/{change_id}", response_model=ContractChangeDetailResponse)
@@ -231,3 +271,62 @@ async def get_change_detail(
         impact_sets=[ImpactSetResponse.model_validate(imp) for imp in change.impact_sets],
         remediation_jobs=[RemediationJobResponse.model_validate(job) for job in jobs],
     )
+
+
+@router.get("/service-graph")
+async def get_service_graph():
+    """Return the service dependency graph with wave structure for visualization."""
+    from propagate.service_map import load_service_map
+    from propagate.dependency_graph import build_dependency_graph_from_service_map
+
+    smap = load_service_map()
+    graph = build_dependency_graph_from_service_map(smap)
+    waves_raw = graph.topological_sort()
+
+    return {
+        "waves": [
+            {"wave": i, "services": w, "role": "source" if i == 0 else "parallel"}
+            for i, w in enumerate(waves_raw)
+        ],
+        "edges": [
+            {"from": dep, "to": svc}
+            for svc, info in smap.items()
+            for dep in info.depends_on
+        ],
+        "services": {
+            name: {
+                "repo": info.repo,
+                "language": info.language,
+                "client_paths": info.client_paths,
+                "test_paths": info.test_paths,
+                "frontend_paths": getattr(info, "frontend_paths", []),
+            }
+            for name, info in smap.items()
+        },
+    }
+
+
+@router.get("/guardrails")
+async def get_guardrails():
+    """Return the current propagation guardrails configuration."""
+    from propagate.guardrails import load_guardrails
+
+    g = load_guardrails()
+    return {
+        "max_parallel": g.max_parallel,
+        "protected_paths": g.protected_paths,
+        "ci_required": g.ci_required,
+        "auto_merge": g.auto_merge,
+    }
+
+
+@router.get("/sync-status")
+async def get_sync_status():
+    """Return the current Devin sync configuration status."""
+    from src.config import settings
+
+    return {
+        "devin_sync_enabled": settings.devin_sync_enabled,
+        "interval_seconds": settings.devin_sync_interval_seconds,
+        "devin_api_configured": bool(settings.devin_api_key),
+    }

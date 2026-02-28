@@ -13,7 +13,7 @@ import logging
 import re
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from propagate.devin_client import DevinClient
@@ -24,12 +24,6 @@ from src.entities.audit_log import AuditLog
 from src.entities.remediation_job import RemediationJob, JobStatus
 
 logger = logging.getLogger(__name__)
-
-TERMINAL_STATUSES = {
-    JobStatus.GREEN.value,
-    JobStatus.CI_FAILED.value,
-    JobStatus.NEEDS_HUMAN.value,
-}
 
 CI_UNKNOWN_MAX_ATTEMPTS = 5  # After this many polls with "unknown" CI, fail closed
 
@@ -143,61 +137,94 @@ async def _log_transition(
     db.add(entry)
 
 
-async def check_jobs(change_id: int | None = None) -> None:
-    """Check Devin status for all running jobs, optionally filtered by change_id."""
+async def sync_job_statuses(
+    db: AsyncSession,
+    change_id: int | None = None,
+    *,
+    log_progress: bool = False,
+) -> dict[str, int]:
+    """Sync remediation jobs against live Devin/GitHub state."""
     client = DevinClient()
     guardrails = load_guardrails()
+    summary = {
+        "checked": 0,
+        "updated": 0,
+        "green": 0,
+        "pr_opened": 0,
+        "ci_failed": 0,
+        "needs_human": 0,
+        "running": 0,
+    }
 
-    async with async_session() as db:
+    def emit(message: str) -> None:
+        if log_progress:
+            print(message)
+
+    try:
         stmt = select(RemediationJob).where(
-            RemediationJob.status.notin_(TERMINAL_STATUSES),
-            RemediationJob.devin_run_id.isnot(None),
+            or_(
+                RemediationJob.devin_run_id.isnot(None),
+                RemediationJob.pr_url.isnot(None),
+            )
         )
         if change_id is not None:
             stmt = stmt.where(RemediationJob.change_id == change_id)
 
-        result = await db.execute(stmt)
+        result = await db.execute(stmt.order_by(RemediationJob.updated_at.desc(), RemediationJob.created_at.desc()))
         jobs = list(result.scalars().all())
 
         if not jobs:
-            print("No in-progress jobs to check.")
-            return
+            emit("No remediation jobs to sync.")
+            return summary
 
-        print(f"Checking {len(jobs)} in-progress jobs...\n")
+        emit(f"Checking {len(jobs)} remediation jobs...\n")
 
         for job in jobs:
-            try:
-                status = await client.get_session(job.devin_run_id)
-            except Exception as e:
-                logger.warning("Failed to poll %s: %s", job.devin_run_id, e)
-                print(f"  [{job.target_repo}] poll error: {e}")
-                continue
+            summary["checked"] += 1
+            status = {}
+            if job.devin_run_id:
+                try:
+                    status = await client.get_session(job.devin_run_id)
+                except Exception as e:
+                    logger.warning("Failed to poll %s: %s", job.devin_run_id, e)
+                    emit(f"  [{job.target_repo}] poll error: {e}")
 
             devin_status = status.get("status_enum", "")
-
-            # Check for PR creation
             structured_output = status.get("structured_output", {})
+            if not isinstance(structured_output, dict):
+                structured_output = {}
+
+            dirty = False
             if structured_output:
                 pr_info = structured_output.get("pull_request")
-                if pr_info:
-                    job.pr_url = pr_info.get("url", "")
-                    if job.status != JobStatus.PR_OPENED.value:
-                        old = job.status
-                        job.status = JobStatus.PR_OPENED.value
-                        await _log_transition(db, job, old, JobStatus.PR_OPENED.value, f"PR: {job.pr_url}")
-                        print(f"  [{job.target_repo}] -> PR_OPENED: {job.pr_url}")
+                if isinstance(pr_info, dict):
+                    pr_url = pr_info.get("url", "")
+                    if pr_url and job.pr_url != pr_url:
+                        job.pr_url = pr_url
+                        dirty = True
 
-            # Terminal states
+                if (
+                    job.pr_url
+                    and job.status not in {JobStatus.PR_OPENED.value, JobStatus.GREEN.value}
+                    and devin_status not in {"stopped", "blocked"}
+                ):
+                    old = job.status
+                    job.status = JobStatus.PR_OPENED.value
+                    job.error_summary = None
+                    await _log_transition(db, job, old, JobStatus.PR_OPENED.value, f"PR: {job.pr_url}")
+                    emit(f"  [{job.target_repo}] -> PR_OPENED: {job.pr_url}")
+                    dirty = True
+
             if devin_status == "blocked":
-                old = job.status
-                job.status = JobStatus.NEEDS_HUMAN.value
-                job.error_summary = "Devin session blocked"
-                await _log_transition(db, job, old, JobStatus.NEEDS_HUMAN.value, job.error_summary)
-                print(f"  [{job.target_repo}] -> NEEDS_HUMAN (blocked)")
+                if job.status != JobStatus.NEEDS_HUMAN.value or job.error_summary != "Devin session blocked":
+                    old = job.status
+                    job.status = JobStatus.NEEDS_HUMAN.value
+                    job.error_summary = "Devin session blocked"
+                    await _log_transition(db, job, old, JobStatus.NEEDS_HUMAN.value, job.error_summary)
+                    emit(f"  [{job.target_repo}] -> NEEDS_HUMAN (blocked)")
+                    dirty = True
             elif devin_status == "stopped":
-                old = job.status
                 if job.pr_url:
-                    # Try GitHub Checks API first (authoritative), fall back to Devin structured_output
                     ci_passed, ci_status = await _fetch_github_ci_status(job.pr_url)
 
                     if ci_status == "unknown":
@@ -206,7 +233,6 @@ async def check_jobs(change_id: int | None = None) -> None:
 
                     if guardrails.ci_required and not ci_passed:
                         if ci_status == "unknown":
-                            # Count prior "CI unknown" audit entries to determine attempt count
                             from sqlalchemy import func as sa_func
                             ci_unknown_count_result = await db.execute(
                                 select(sa_func.count(AuditLog.id)).where(
@@ -217,73 +243,142 @@ async def check_jobs(change_id: int | None = None) -> None:
                             ci_unknown_count = ci_unknown_count_result.scalar() or 0
 
                             if ci_unknown_count >= CI_UNKNOWN_MAX_ATTEMPTS:
-                                # Fail closed after too many unknown checks
-                                job.status = JobStatus.CI_FAILED.value
-                                job.error_summary = f"CI status unknown after {CI_UNKNOWN_MAX_ATTEMPTS} checks — failing closed"
-                                await _log_transition(
-                                    db, job, old, JobStatus.CI_FAILED.value,
-                                    f"CI status unknown after {CI_UNKNOWN_MAX_ATTEMPTS} checks — failing closed: {job.pr_url}",
+                                error_summary = (
+                                    f"CI status unknown after {CI_UNKNOWN_MAX_ATTEMPTS} checks — failing closed"
                                 )
-                                print(f"  [{job.target_repo}] -> CI_FAILED (unknown after {CI_UNKNOWN_MAX_ATTEMPTS} checks): {job.pr_url}")
+                                if job.status != JobStatus.CI_FAILED.value or job.error_summary != error_summary:
+                                    old = job.status
+                                    job.status = JobStatus.CI_FAILED.value
+                                    job.error_summary = error_summary
+                                    await _log_transition(
+                                        db,
+                                        job,
+                                        old,
+                                        JobStatus.CI_FAILED.value,
+                                        f"CI status unknown after {CI_UNKNOWN_MAX_ATTEMPTS} checks — failing closed: {job.pr_url}",
+                                    )
+                                    emit(
+                                        f"  [{job.target_repo}] -> CI_FAILED (unknown after {CI_UNKNOWN_MAX_ATTEMPTS} checks): {job.pr_url}"
+                                    )
+                                    dirty = True
                             else:
-                                # Hold at PR_OPENED, log for attempt counting
-                                job.status = JobStatus.PR_OPENED.value
-                                await _log_transition(
-                                    db, job, old, JobStatus.PR_OPENED.value,
-                                    f"CI status unknown, holding at PR_OPENED (attempt {ci_unknown_count + 1}/{CI_UNKNOWN_MAX_ATTEMPTS}): {job.pr_url}",
+                                detail = (
+                                    f"CI status unknown, holding at PR_OPENED (attempt {ci_unknown_count + 1}/{CI_UNKNOWN_MAX_ATTEMPTS}): {job.pr_url}"
                                 )
-                                print(f"  [{job.target_repo}] -> PR_OPENED (CI unknown, attempt {ci_unknown_count + 1}/{CI_UNKNOWN_MAX_ATTEMPTS}): {job.pr_url}")
+                                if job.status != JobStatus.PR_OPENED.value:
+                                    old = job.status
+                                    job.status = JobStatus.PR_OPENED.value
+                                    job.error_summary = None
+                                    await _log_transition(
+                                        db,
+                                        job,
+                                        old,
+                                        JobStatus.PR_OPENED.value,
+                                        detail,
+                                    )
+                                    emit(
+                                        f"  [{job.target_repo}] -> PR_OPENED (CI unknown, attempt {ci_unknown_count + 1}/{CI_UNKNOWN_MAX_ATTEMPTS}): {job.pr_url}"
+                                    )
+                                    dirty = True
                         else:
-                            job.status = JobStatus.CI_FAILED.value
-                            job.error_summary = f"CI status: {ci_status}"
-                            await _log_transition(
-                                db, job, old, JobStatus.CI_FAILED.value,
-                                f"PR exists but CI failed ({ci_status}): {job.pr_url}",
-                            )
-                            print(f"  [{job.target_repo}] -> CI_FAILED ({ci_status}): {job.pr_url}")
+                            error_summary = f"CI status: {ci_status}"
+                            if job.status != JobStatus.CI_FAILED.value or job.error_summary != error_summary:
+                                old = job.status
+                                job.status = JobStatus.CI_FAILED.value
+                                job.error_summary = error_summary
+                                await _log_transition(
+                                    db,
+                                    job,
+                                    old,
+                                    JobStatus.CI_FAILED.value,
+                                    f"PR exists but CI failed ({ci_status}): {job.pr_url}",
+                                )
+                                emit(f"  [{job.target_repo}] -> CI_FAILED ({ci_status}): {job.pr_url}")
+                                dirty = True
                     else:
-                        # Post-execution path validation
                         pr_changed_files = (structured_output or {}).get("changed_files", [])
                         if not pr_changed_files and job.pr_url:
                             pr_changed_files = await _fetch_pr_changed_files(job.pr_url)
                         if pr_changed_files:
                             path_violations = guardrails.validate_paths(pr_changed_files)
                             if path_violations:
-                                job.status = JobStatus.NEEDS_HUMAN.value
-                                job.error_summary = f"PR touches protected paths: {'; '.join(path_violations)}"
-                                await _log_transition(
-                                    db, job, old, JobStatus.NEEDS_HUMAN.value,
-                                    f"Post-execution path violation: {'; '.join(path_violations)}",
-                                )
-                                print(f"  [{job.target_repo}] -> NEEDS_HUMAN (protected path): {path_violations}")
+                                error_summary = f"PR touches protected paths: {'; '.join(path_violations)}"
+                                if job.status != JobStatus.NEEDS_HUMAN.value or job.error_summary != error_summary:
+                                    old = job.status
+                                    job.status = JobStatus.NEEDS_HUMAN.value
+                                    job.error_summary = error_summary
+                                    await _log_transition(
+                                        db,
+                                        job,
+                                        old,
+                                        JobStatus.NEEDS_HUMAN.value,
+                                        f"Post-execution path violation: {'; '.join(path_violations)}",
+                                    )
+                                    emit(f"  [{job.target_repo}] -> NEEDS_HUMAN (protected path): {path_violations}")
+                                    dirty = True
                                 continue
                         elif guardrails.protected_paths:
-                            # Fail closed: cannot verify changed files against
-                            # protected paths — require human review.
-                            job.status = JobStatus.NEEDS_HUMAN.value
-                            job.error_summary = "Cannot verify PR changed files against protected paths"
-                            await _log_transition(
-                                db, job, old, JobStatus.NEEDS_HUMAN.value,
-                                "Path validation fail-closed: changed files unavailable",
-                            )
-                            print(f"  [{job.target_repo}] -> NEEDS_HUMAN (changed files unavailable for path check)")
+                            error_summary = "Cannot verify PR changed files against protected paths"
+                            if job.status != JobStatus.NEEDS_HUMAN.value or job.error_summary != error_summary:
+                                old = job.status
+                                job.status = JobStatus.NEEDS_HUMAN.value
+                                job.error_summary = error_summary
+                                await _log_transition(
+                                    db,
+                                    job,
+                                    old,
+                                    JobStatus.NEEDS_HUMAN.value,
+                                    "Path validation fail-closed: changed files unavailable",
+                                )
+                                emit(f"  [{job.target_repo}] -> NEEDS_HUMAN (changed files unavailable for path check)")
+                                dirty = True
                             continue
 
-                        job.status = JobStatus.GREEN.value
-                        merge_ok, merge_reason = guardrails.check_can_merge(ci_passed)
+                        _merge_ok, merge_reason = guardrails.check_can_merge(ci_passed)
                         detail = f"PR: {job.pr_url} | merge: {merge_reason}"
-                        await _log_transition(db, job, old, JobStatus.GREEN.value, detail)
-                        print(f"  [{job.target_repo}] -> GREEN: {job.pr_url} ({merge_reason})")
+                        if job.status != JobStatus.GREEN.value or job.error_summary is not None:
+                            old = job.status
+                            job.status = JobStatus.GREEN.value
+                            job.error_summary = None
+                            await _log_transition(db, job, old, JobStatus.GREEN.value, detail)
+                            emit(f"  [{job.target_repo}] -> GREEN: {job.pr_url} ({merge_reason})")
+                            dirty = True
                 else:
-                    job.status = JobStatus.CI_FAILED.value
-                    job.error_summary = "Devin stopped without PR"
-                    await _log_transition(db, job, old, JobStatus.CI_FAILED.value, job.error_summary)
-                    print(f"  [{job.target_repo}] -> CI_FAILED (no PR)")
+                    if job.status != JobStatus.CI_FAILED.value or job.error_summary != "Devin stopped without PR":
+                        old = job.status
+                        job.status = JobStatus.CI_FAILED.value
+                        job.error_summary = "Devin stopped without PR"
+                        await _log_transition(db, job, old, JobStatus.CI_FAILED.value, job.error_summary)
+                        emit(f"  [{job.target_repo}] -> CI_FAILED (no PR)")
+                        dirty = True
             else:
-                print(f"  [{job.target_repo}] still {job.status} (devin: {devin_status})")
+                emit(f"  [{job.target_repo}] still {job.status} (devin: {devin_status or 'unknown'})")
+
+            if dirty:
+                summary["updated"] += 1
 
         await db.commit()
-    print("\nDone.")
+        status_counts = {
+            JobStatus.GREEN.value: "green",
+            JobStatus.PR_OPENED.value: "pr_opened",
+            JobStatus.CI_FAILED.value: "ci_failed",
+            JobStatus.NEEDS_HUMAN.value: "needs_human",
+            JobStatus.RUNNING.value: "running",
+        }
+        for job in jobs:
+            bucket = status_counts.get(job.status)
+            if bucket:
+                summary[bucket] += 1
+        return summary
+    finally:
+        await client.close()
+
+
+async def check_jobs(change_id: int | None = None) -> None:
+    """Check Devin status for jobs, optionally filtered by change_id."""
+    async with async_session() as db:
+        summary = await sync_job_statuses(db=db, change_id=change_id, log_progress=True)
+    print(f"\nDone. Checked {summary['checked']} jobs, updated {summary['updated']}.")
 
 
 def main() -> None:

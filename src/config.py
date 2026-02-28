@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     devin_sync_interval_seconds: int = 45
     devin_sync_limit: int = 50
 
+    # Notification service
+    notification_webhook_url: str = ""
+
     if _USES_PYDANTIC_SETTINGS:
         model_config = {"env_prefix": "API_CORE_"}
     else:
