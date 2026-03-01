@@ -195,7 +195,15 @@ async def sync_live_jobs(
     now = time.monotonic()
     if now - _last_sync_time < _SYNC_COOLDOWN:
         remaining = int(_SYNC_COOLDOWN - (now - _last_sync_time))
-        raise HTTPException(status_code=429, detail=f"Sync cooldown: retry in {remaining}s")
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "kind": "sync_cooldown",
+                "message": f"Sync cooldown: retry in {remaining}s",
+                "retry_after_seconds": remaining,
+            },
+            headers={"Retry-After": str(remaining)},
+        )
     _last_sync_time = now
     devin_result = await sync_devin_sessions(
         db=db,

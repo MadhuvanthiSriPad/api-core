@@ -42,6 +42,7 @@ class RemediationJobResponse(BaseModel):
     devin_run_id: str | None = None
     devin_session_url: str | None = None
     pr_url: str | None = None
+    notification_mode: str | None = None
     created_at: datetime
     updated_at: datetime
     bundle_hash: str | None = None

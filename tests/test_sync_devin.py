@@ -122,6 +122,35 @@ class TestSyncDevin:
                 assert result["updated"] >= 1
 
     @pytest.mark.asyncio
+    async def test_does_not_attach_closed_unmerged_pr(self):
+        mock_client = AsyncMock()
+        mock_client.list_sessions.return_value = [{"session_id": "devin_closed"}]
+        mock_client.get_session.return_value = {
+            "session_id": "devin_closed",
+            "status_enum": "stopped",
+            "structured_output": {
+                "pull_request": {
+                    "url": "https://github.com/MadhuvanthiSriPad/billing-service/pull/404",
+                }
+            },
+        }
+
+        with (
+            patch("propagate.sync_devin.DevinClient", return_value=mock_client),
+            patch("propagate.sync_devin.load_service_map", return_value=_service_map()),
+            patch(
+                "propagate.sync_devin._fetch_github_pr_metadata",
+                AsyncMock(return_value={"state": "closed", "merged": False, "head_sha": "deadbeef"}),
+            ),
+        ):
+            async with TestSession() as db:
+                result = await sync_devin_sessions(db=db, limit=10, include_terminal=True)
+                row = (await db.execute(select(RemediationJob))).scalar_one()
+                assert row.pr_url is None
+                assert row.status == JobStatus.CI_FAILED.value
+                assert result["imported"] == 1
+
+    @pytest.mark.asyncio
     async def test_skips_sessions_not_in_service_map(self):
         mock_client = AsyncMock()
         mock_client.list_sessions.return_value = [{"session_id": "devin_unknown"}]
@@ -174,3 +203,53 @@ class TestSyncDevin:
                     )
                 ).scalar_one()
                 assert "request.body.max_cost_usd" in latest_change.summary_json
+
+    @pytest.mark.asyncio
+    async def test_pr_opened_webhook_includes_notification_bundle(self):
+        mock_client = AsyncMock()
+        mock_client.list_sessions.return_value = [{"session_id": "devin_notify"}]
+        mock_client.get_session.return_value = {
+            "session_id": "devin_notify",
+            "status_enum": "stopped",
+            "prompt": (
+                "# URGENT: Breaking API Contract Change - Parallel Remediation Session\n"
+                "**Breaking Change**: Added required field(s): request.body.sla_tier\n"
+            ),
+            "structured_output": {
+                "pull_request": {
+                    "url": "https://github.com/MadhuvanthiSriPad/billing-service/pull/303",
+                },
+                "notification_bundle": {
+                    "author": "devin",
+                    "assertions": {
+                        "source_repo": "api-core",
+                        "target_repo": "https://github.com/MadhuvanthiSriPad/billing-service",
+                        "pr_url": "https://github.com/MadhuvanthiSriPad/billing-service/pull/303",
+                    },
+                    "jira": {
+                        "summary": "Devin-authored Jira summary",
+                        "description_text": "Devin-authored Jira description",
+                    },
+                    "slack": {
+                        "text": "Devin-authored Slack text",
+                        "blocks": [],
+                    },
+                },
+            },
+        }
+        mock_emit = AsyncMock()
+
+        with (
+            patch("propagate.sync_devin.DevinClient", return_value=mock_client),
+            patch("propagate.sync_devin.load_service_map", return_value=_service_map()),
+            patch("propagate.sync_devin.emit_webhook", mock_emit),
+        ):
+            async with TestSession() as db:
+                await sync_devin_sessions(db=db, limit=10, include_terminal=True)
+
+        mock_emit.assert_awaited_once()
+        path_arg, payload_arg = mock_emit.await_args.args
+        assert path_arg == "/api/v1/webhooks/pr-opened"
+        assert payload_arg["notification_bundle"]["author"] == "devin"
+        assert payload_arg["notification_bundle"]["jira"]["summary"] == "Devin-authored Jira summary"
+        assert payload_arg["notification_bundle"]["assertions"]["target_repo"].endswith("/billing-service")

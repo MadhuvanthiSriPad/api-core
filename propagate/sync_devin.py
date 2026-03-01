@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from contextlib import suppress
 from datetime import datetime, timezone
 
@@ -17,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from propagate.devin_client import DevinClient
-from propagate.check_status import sync_job_statuses
+from propagate.check_status import _fetch_github_pr_metadata, sync_job_statuses
 from propagate.notify import emit_webhook
 from propagate.service_map import load_service_map
 from src.config import settings
@@ -31,6 +32,7 @@ logger = logging.getLogger(__name__)
 _DEVIN_TERMINAL = {"stopped", "failed"}
 # Prevent overlapping sync writers (background loop + manual sync endpoint).
 _SYNC_MUTEX: asyncio.Lock = asyncio.Lock()
+
 
 def _map_status(devin_status: str, pr_url: str | None) -> str:
     """Map Devin state to remediation job state."""
@@ -48,6 +50,22 @@ def _map_status(devin_status: str, pr_url: str | None) -> str:
     if status in {"stopped", "finished", "completed", "succeeded", "success"}:
         return JobStatus.PR_OPENED.value if pr_url else JobStatus.GREEN.value
     return JobStatus.RUNNING.value
+
+
+def _should_attach_pr(raw_pr_url: str | None, metadata: dict[str, str | bool]) -> bool:
+    if not raw_pr_url:
+        return False
+    return not (metadata.get("state") == "closed" and not metadata.get("merged"))
+
+
+def _active_pr_url(raw_pr_url: str | None, metadata: dict[str, str | bool]) -> str | None:
+    if not raw_pr_url:
+        return None
+    if metadata.get("state") == "open":
+        return raw_pr_url
+    if metadata.get("state") == "closed":
+        return None
+    return raw_pr_url
 
 
 def _normalize_repo_url(raw: str | None) -> str | None:
@@ -99,10 +117,33 @@ def _extract_pr_url(payload: dict) -> str | None:
     return None
 
 
+def _extract_notification_bundle(payload: dict) -> dict | None:
+    """Extract a Devin-authored notification bundle when present."""
+    structured = payload.get("structured_output")
+    if isinstance(structured, dict):
+        bundle = structured.get("notification_bundle")
+        if isinstance(bundle, dict) and bundle:
+            return bundle
+    bundle = payload.get("notification_bundle")
+    if isinstance(bundle, dict) and bundle:
+        return bundle
+    return None
+
+
 def _extract_prompt_summary(payload: dict) -> str:
     """Derive a concise summary from Devin session content."""
     prompt = payload.get("prompt")
     if isinstance(prompt, str) and prompt.strip():
+        lines = [line.strip() for line in prompt.splitlines() if line.strip()]
+        for line in lines:
+            if line.startswith("**Breaking Change**:"):
+                return line.split(":", 1)[1].strip()[:200]
+        for line in lines:
+            if line.startswith("**Summary**:"):
+                return line.split(":", 1)[1].strip()[:200]
+        for line in lines:
+            if not line.startswith("#") and not line.startswith("**") and len(line) > 20:
+                return line[:200]
         return prompt.strip()[:200]
     title = payload.get("title")
     if isinstance(title, str) and title.strip():
@@ -116,6 +157,116 @@ def _extract_prompt_summary(payload: dict) -> str:
             if isinstance(text, str) and text.strip():
                 return text.strip()[:200]
     return "Live Devin remediation sync"
+
+
+def _extract_markdown_section(prompt: str, heading_prefix: str) -> list[str]:
+    lines = prompt.splitlines()
+    collected: list[str] = []
+    collecting = False
+    for raw in lines:
+        stripped = raw.strip()
+        if stripped.startswith("## "):
+            if collecting:
+                break
+            heading = stripped[3:].strip().lower()
+            if heading.startswith(heading_prefix.lower()):
+                collecting = True
+                continue
+        if collecting:
+            collected.append(raw.rstrip())
+    return collected
+
+
+def _clean_prompt_line(text: str) -> str:
+    value = text.strip()
+    value = re.sub(r"^\*\*([^*]+)\*\*:\s*", "", value)
+    value = re.sub(r"^[\-\*\u2022]\s*", "", value)
+    value = re.sub(r"^\d+\.\s*", "", value)
+    return value.strip()
+
+
+def _extract_bullets(lines: list[str], *, limit: int = 5) -> list[str]:
+    items: list[str] = []
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        if stripped.startswith(("•", "-", "*")) or re.match(r"^\d+\.\s+", stripped):
+            cleaned = _clean_prompt_line(stripped)
+            if cleaned:
+                items.append(cleaned)
+        elif items and stripped.startswith(("  ", "\t")):
+            cleaned = _clean_prompt_line(stripped)
+            if cleaned:
+                items.append(cleaned)
+        if len(items) >= limit:
+            break
+    return items[:limit]
+
+
+def _extract_affected_endpoints(prompt: str) -> list[str]:
+    lines = _extract_markdown_section(prompt, "What Changed Upstream")
+    endpoints: list[str] = []
+    capture = False
+    for raw in lines:
+        stripped = raw.strip()
+        if stripped.startswith("**Affected Endpoints**:"):
+            capture = True
+            tail = stripped.split(":", 1)[1].strip()
+            if tail:
+                cleaned = _clean_prompt_line(tail)
+                if cleaned:
+                    endpoints.append(cleaned)
+            continue
+        if capture:
+            if stripped.startswith("**") and not stripped.startswith("**Affected Endpoints**:"):
+                break
+            if stripped.startswith(("•", "-", "*")):
+                cleaned = _clean_prompt_line(stripped)
+                if cleaned:
+                    endpoints.append(cleaned)
+    return endpoints[:5]
+
+
+def _extract_devin_context(payload: dict) -> dict:
+    prompt = payload.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return {
+            "brief": _extract_prompt_summary(payload),
+            "mission": "",
+            "affected_endpoints": [],
+            "technical_details": [],
+            "key_files": [],
+            "success_criteria": [],
+        }
+
+    mission_lines = _extract_markdown_section(prompt, "Your Mission")
+    mission = ""
+    for raw in mission_lines:
+        cleaned = _clean_prompt_line(raw)
+        if cleaned and not re.match(r"^\d+\.\s*", raw.strip()):
+            mission = cleaned
+            break
+
+    key_file_lines = _extract_markdown_section(prompt, "Key Files to Investigate")
+    frontend_lines = _extract_markdown_section(prompt, "Frontend Files")
+    return {
+        "brief": _extract_prompt_summary(payload),
+        "mission": mission[:240],
+        "affected_endpoints": _extract_affected_endpoints(prompt),
+        "technical_details": _extract_bullets(
+            _extract_markdown_section(prompt, "Technical Details of the Breaking Change"),
+            limit=5,
+        ),
+        "key_files": [
+            *(_extract_bullets(key_file_lines, limit=6)),
+            *(_extract_bullets(frontend_lines, limit=3)),
+        ][:7],
+        "success_criteria": _extract_bullets(
+            _extract_markdown_section(prompt, "Success Criteria"),
+            limit=5,
+        ),
+    }
 
 
 def _build_recovery_complete(
@@ -147,6 +298,7 @@ def _build_recovery_complete(
             "target_repo": j.target_repo or "",
             "target_service": svc_name or (j.target_repo or "").split("/")[-1],
             "pr_url": j.pr_url or "",
+            "devin_session_url": j.devin_session_url or "",
             "started_at": j.created_at.isoformat() if j.created_at else "",
             "resolved_at": j.updated_at.isoformat() if j.updated_at else "",
         })
@@ -163,6 +315,7 @@ def _build_recovery_complete(
         "event_type": "recovery_complete",
         "change_id": change.id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "source_repo": "api-core",
         "severity": change.severity or "high",
         "is_breaking": bool(change.is_breaking),
         "summary": summary,
@@ -247,6 +400,11 @@ async def sync_devin_sessions(
                     detail = await client.get_session(session_id)
                 except Exception:
                     detail = sess
+                devin_context = _extract_devin_context(detail)
+                notification_bundle = (
+                    _extract_notification_bundle(detail)
+                    or _extract_notification_bundle(sess)
+                )
 
                 devin_status = str(
                     detail.get("status_enum") or sess.get("status_enum") or "running"
@@ -254,9 +412,16 @@ async def sync_devin_sessions(
                 if not include_terminal and devin_status in _DEVIN_TERMINAL:
                     continue
 
-                pr_url = _extract_pr_url(detail) or _extract_pr_url(sess)
+                raw_pr_url = _extract_pr_url(detail) or _extract_pr_url(sess)
+                pr_metadata = (
+                    await _fetch_github_pr_metadata(raw_pr_url)
+                    if raw_pr_url
+                    else {"state": "unknown", "merged": False, "head_sha": ""}
+                )
+                pr_url = raw_pr_url if _should_attach_pr(raw_pr_url, pr_metadata) else None
+                active_pr_url = _active_pr_url(raw_pr_url, pr_metadata)
                 repo = (
-                    _repo_from_pr_url(pr_url)
+                    _repo_from_pr_url(raw_pr_url)
                     or _normalize_repo_url(detail.get("repo") or detail.get("repository"))
                     or _normalize_repo_url(sess.get("repo") or sess.get("repository"))
                 )
@@ -287,7 +452,12 @@ async def sync_devin_sessions(
                         )
                         job = repo_result.scalar_one_or_none()
 
-                mapped = _map_status(devin_status, pr_url)
+                mapped = _map_status(devin_status, active_pr_url)
+                if raw_pr_url and pr_metadata.get("state") == "closed" and not pr_metadata.get("merged"):
+                    if devin_status == "blocked":
+                        mapped = JobStatus.NEEDS_HUMAN.value
+                    elif devin_status in {"stopped", "finished", "completed", "succeeded", "success"}:
+                        mapped = JobStatus.CI_FAILED.value
 
                 # Resolve service name from repo URL.
                 _svc_name = None
@@ -305,23 +475,29 @@ async def sync_devin_sessions(
                         pr_url=pr_url,
                     )
                     db.add(job)
+                    await db.flush()
                     imported += 1
                     # New job created with PR already open → notify.
-                    if mapped == JobStatus.PR_OPENED.value and pr_url:
-                        pr_opened_events.append({
+                    if mapped == JobStatus.PR_OPENED.value and active_pr_url:
+                        event_payload = {
                             "event_type": "pr_opened",
                             "change_id": change.id,
-                            "job_id": 0,  # will be set after flush
+                            "job_id": job.job_id,
                             "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "source_repo": "api-core",
                             "target_repo": repo,
                             "target_service": _svc_name or repo.split("/")[-1],
-                            "pr_url": pr_url,
+                            "pr_url": active_pr_url,
                             "devin_session_url": f"{settings.devin_app_base}/sessions/{session_id}",
                             "severity": "high",
                             "is_breaking": True,
-                            "summary": _extract_prompt_summary(detail),
-                            "changed_routes": [],
-                        })
+                            "summary": devin_context.get("brief") or _extract_prompt_summary(detail),
+                            "changed_routes": devin_context.get("affected_endpoints", []),
+                            "devin_context": devin_context,
+                        }
+                        if notification_bundle:
+                            event_payload["notification_bundle"] = notification_bundle
+                        pr_opened_events.append(event_payload)
                 else:
                     # Update only when values changed to avoid unnecessary writes/locks.
                     old_status = job.status
@@ -338,7 +514,7 @@ async def sync_devin_sessions(
                     if job.status != mapped:
                         job.status = mapped
                         dirty = True
-                    if pr_url and job.pr_url != pr_url:
+                    if job.pr_url != pr_url:
                         job.pr_url = pr_url
                         dirty = True
                     if dirty:
@@ -347,23 +523,28 @@ async def sync_devin_sessions(
                     # Existing job transitions to pr_opened with a new PR URL → notify.
                     if (
                         mapped == JobStatus.PR_OPENED.value
-                        and pr_url
+                        and active_pr_url
                         and old_status != JobStatus.PR_OPENED.value
                     ):
-                        pr_opened_events.append({
+                        event_payload = {
                             "event_type": "pr_opened",
                             "change_id": change.id if change else 0,
                             "job_id": job.job_id or 0,
                             "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "source_repo": "api-core",
                             "target_repo": repo,
                             "target_service": _svc_name or repo.split("/")[-1],
-                            "pr_url": pr_url,
+                            "pr_url": active_pr_url,
                             "devin_session_url": f"{settings.devin_app_base}/sessions/{session_id}",
                             "severity": "high",
                             "is_breaking": True,
-                            "summary": _extract_prompt_summary(detail),
-                            "changed_routes": [],
-                        })
+                            "summary": devin_context.get("brief") or _extract_prompt_summary(detail),
+                            "changed_routes": devin_context.get("affected_endpoints", []),
+                            "devin_context": devin_context,
+                        }
+                        if notification_bundle:
+                            event_payload["notification_bundle"] = notification_bundle
+                        pr_opened_events.append(event_payload)
 
             await db.commit()
 

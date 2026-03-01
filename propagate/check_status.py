@@ -33,6 +33,45 @@ TERMINAL_STATUSES = {
 }
 
 
+def _parse_pr_url(pr_url: str) -> tuple[str, str, str] | None:
+    match = re.match(r"https://github\.com/([^/]+)/([^/]+)/pull/(\d+)", pr_url or "")
+    if not match:
+        return None
+    return match.group(1), match.group(2), match.group(3)
+
+
+async def _fetch_github_pr_metadata(pr_url: str) -> dict[str, str | bool]:
+    """Fetch GitHub PR metadata needed to validate active PR attachment."""
+    github_token = settings.github_token
+    parsed = _parse_pr_url(pr_url)
+    if not github_token or not parsed:
+        return {"state": "unknown", "merged": False, "head_sha": ""}
+
+    owner, repo, pr_number = parsed
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            pr_resp = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
+                headers={
+                    "Authorization": f"Bearer {github_token}",
+                    "Accept": "application/vnd.github+json",
+                },
+            )
+            if pr_resp.status_code != 200:
+                return {"state": "unknown", "merged": False, "head_sha": ""}
+
+            payload = pr_resp.json()
+            return {
+                "state": str(payload.get("state") or "unknown"),
+                "merged": bool(payload.get("merged") or False),
+                "head_sha": str(payload.get("head", {}).get("sha") or ""),
+            }
+    except Exception as e:
+        logger.warning("GitHub PR metadata fetch failed: %s", e)
+        return {"state": "unknown", "merged": False, "head_sha": ""}
+
+
 async def _fetch_github_ci_status(pr_url: str) -> tuple[bool, str]:
     """Fetch CI status from GitHub Checks API as a fallback.
 
@@ -42,30 +81,24 @@ async def _fetch_github_ci_status(pr_url: str) -> tuple[bool, str]:
     if not github_token or not pr_url:
         return False, "unknown"
 
-    # Parse PR URL: https://github.com/{owner}/{repo}/pull/{number}
-    match = re.match(r"https://github\.com/([^/]+)/([^/]+)/pull/(\d+)", pr_url)
-    if not match:
+    parsed = _parse_pr_url(pr_url)
+    if not parsed:
         return False, "unknown"
 
-    owner, repo, pr_number = match.group(1), match.group(2), match.group(3)
+    owner, repo, _pr_number = parsed
 
     try:
+        metadata = await _fetch_github_pr_metadata(pr_url)
+        if metadata["state"] == "closed" and not metadata["merged"]:
+            return False, "closed"
+        if metadata["merged"]:
+            return True, "merged"
+
+        head_sha = str(metadata["head_sha"] or "")
+        if not head_sha:
+            return False, "unknown"
+
         async with httpx.AsyncClient(timeout=15.0) as client:
-            # Get the PR to find the head SHA
-            pr_resp = await client.get(
-                f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
-                headers={
-                    "Authorization": f"Bearer {github_token}",
-                    "Accept": "application/vnd.github+json",
-                },
-            )
-            if pr_resp.status_code != 200:
-                return False, "unknown"
-
-            head_sha = pr_resp.json().get("head", {}).get("sha", "")
-            if not head_sha:
-                return False, "unknown"
-
             # Get check runs for that SHA
             checks_resp = await client.get(
                 f"https://api.github.com/repos/{owner}/{repo}/commits/{head_sha}/check-runs",
@@ -103,11 +136,11 @@ async def _fetch_pr_changed_files(pr_url: str) -> list[str]:
     if not github_token or not pr_url:
         return []
 
-    match = re.match(r"https://github\.com/([^/]+)/([^/]+)/pull/(\d+)", pr_url)
-    if not match:
+    parsed = _parse_pr_url(pr_url)
+    if not parsed:
         return []
 
-    owner, repo, pr_number = match.group(1), match.group(2), match.group(3)
+    owner, repo, pr_number = parsed
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -200,12 +233,23 @@ async def sync_job_statuses(
                 structured_output = {}
 
             dirty = False
+            candidate_pr_url = ""
+            candidate_pr_metadata: dict[str, str | bool] = {
+                "state": "unknown",
+                "merged": False,
+                "head_sha": "",
+            }
             if structured_output:
                 pr_info = structured_output.get("pull_request")
                 if isinstance(pr_info, dict):
-                    pr_url = pr_info.get("url", "")
-                    if pr_url and job.pr_url != pr_url:
-                        job.pr_url = pr_url
+                    candidate_pr_url = pr_info.get("url", "")
+                    candidate_pr_metadata = await _fetch_github_pr_metadata(candidate_pr_url)
+                    attach_pr = bool(candidate_pr_url) and not (
+                        candidate_pr_metadata["state"] == "closed" and not candidate_pr_metadata["merged"]
+                    )
+                    next_pr_url = candidate_pr_url if attach_pr else None
+                    if job.pr_url != next_pr_url:
+                        job.pr_url = next_pr_url
                         dirty = True
 
                 if (
@@ -229,6 +273,38 @@ async def sync_job_statuses(
                     emit(f"  [{job.target_repo}] -> NEEDS_HUMAN (blocked)")
                     dirty = True
             elif devin_status == "stopped":
+                pr_state_url = candidate_pr_url or job.pr_url or ""
+                pr_state_metadata = (
+                    candidate_pr_metadata
+                    if candidate_pr_url
+                    else await _fetch_github_pr_metadata(pr_state_url)
+                    if pr_state_url
+                    else {"state": "unknown", "merged": False, "head_sha": ""}
+                )
+                if pr_state_url and pr_state_metadata["state"] == "closed" and not pr_state_metadata["merged"]:
+                    error_summary = "PR closed without merge"
+                    if (
+                        job.status != JobStatus.CI_FAILED.value
+                        or job.error_summary != error_summary
+                        or job.pr_url is not None
+                    ):
+                        old = job.status
+                        job.status = JobStatus.CI_FAILED.value
+                        job.error_summary = error_summary
+                        job.pr_url = None
+                        await _log_transition(
+                            db,
+                            job,
+                            old,
+                            JobStatus.CI_FAILED.value,
+                            f"PR closed without merge: {pr_state_url}",
+                        )
+                        emit(f"  [{job.target_repo}] -> CI_FAILED (closed PR): {pr_state_url}")
+                        dirty = True
+                    if dirty:
+                        summary["updated"] += 1
+                    continue
+
                 if job.pr_url:
                     ci_passed, ci_status = await _fetch_github_ci_status(job.pr_url)
 

@@ -218,3 +218,35 @@ class TestCheckJobs:
             job = result.scalar_one()
             assert job.status == JobStatus.CI_FAILED.value
             assert "failing closed" in job.error_summary
+
+    @pytest.mark.asyncio
+    async def test_closed_unmerged_pr_is_not_kept_as_active_attachment(self):
+        """Closed-unmerged PRs should fail the job and clear the visible pr_url."""
+        job_id = await _create_job(pr_url="https://github.com/org/test/pull/55")
+
+        mock_client = AsyncMock()
+        mock_client.get_session.return_value = {
+            "status_enum": "stopped",
+            "structured_output": {
+                "pull_request": {"url": "https://github.com/org/test/pull/55"},
+            },
+        }
+
+        with (
+            patch("propagate.check_status.async_session", TestSession),
+            patch("propagate.check_status.DevinClient", return_value=mock_client),
+            patch(
+                "propagate.check_status._fetch_github_pr_metadata",
+                AsyncMock(return_value={"state": "closed", "merged": False, "head_sha": "deadbeef"}),
+            ),
+        ):
+            await check_jobs()
+
+        async with TestSession() as db:
+            result = await db.execute(
+                select(RemediationJob).where(RemediationJob.job_id == job_id)
+            )
+            job = result.scalar_one()
+            assert job.status == JobStatus.CI_FAILED.value
+            assert job.pr_url is None
+            assert job.error_summary == "PR closed without merge"

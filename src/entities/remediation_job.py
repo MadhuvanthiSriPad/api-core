@@ -53,3 +53,8 @@ class RemediationJob(Base):
         if run_ref.startswith("http://") or run_ref.startswith("https://"):
             return run_ref
         return f"{settings.devin_app_base}/sessions/{run_ref}"
+
+    @property
+    def notification_mode(self) -> str:
+        """Expose how downstream notifications are authored for the UI."""
+        return "devin_first"
