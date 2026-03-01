@@ -401,7 +401,7 @@ async def seed_usage_requests(db: AsyncSession, rng: random.Random):
             day_start=day_start,
             hour_weights=[1, 1, 1, 1, 1, 1, 2, 4, 6, 7, 8, 8, 7, 7, 6, 5, 3, 2, 1, 1, 1, 1, 1, 1],
             status_population=[200, 201, 400, 409, 500],
-            status_weights=[76, 14, 5, 3, 2],
+            status_weights=[82, 14, 3, 1, 0],
             latency_range=(28, 140),
         )
         await add_requests(
@@ -412,7 +412,7 @@ async def seed_usage_requests(db: AsyncSession, rng: random.Random):
             day_start=day_start,
             hour_weights=[1, 1, 1, 1, 1, 1, 2, 3, 5, 7, 8, 8, 8, 8, 7, 6, 4, 3, 2, 1, 1, 1, 1, 1],
             status_population=[200, 304, 404, 429, 502],
-            status_weights=[85, 7, 4, 2, 2],
+            status_weights=[90, 7, 2, 1, 0],
             latency_range=(18, 120),
         )
         await add_requests(
@@ -423,7 +423,7 @@ async def seed_usage_requests(db: AsyncSession, rng: random.Random):
             day_start=day_start,
             hour_weights=[1, 1, 1, 1, 1, 1, 2, 3, 4, 5, 6, 6, 6, 6, 5, 5, 4, 3, 2, 1, 1, 1, 1, 1],
             status_population=[200, 202, 404, 500],
-            status_weights=[87, 8, 3, 2],
+            status_weights=[92, 7, 1, 0],
             latency_range=(24, 135),
         )
 
@@ -508,7 +508,7 @@ async def seed_contract_change_demo(db: AsyncSession):
             "devin_run_id": "devin_billing_sla_012",
             "pr_url": "https://github.com/MadhuvanthiSriPad/billing-service/pull/12",
             "created_at": now - timedelta(hours=1, minutes=24),
-            "updated_at": now - timedelta(minutes=18),
+            "updated_at": now - timedelta(minutes=56),
             "bundle_hash": "billing-sla-012",
             "error_summary": None,
         },
@@ -518,7 +518,7 @@ async def seed_contract_change_demo(db: AsyncSession):
             "devin_run_id": "devin_dashboard_sla_009",
             "pr_url": "https://github.com/MadhuvanthiSriPad/dashboard-service/pull/9",
             "created_at": now - timedelta(hours=1, minutes=17),
-            "updated_at": now - timedelta(minutes=11),
+            "updated_at": now - timedelta(minutes=45),
             "bundle_hash": "dashboard-sla-009",
             "error_summary": None,
         },
@@ -528,7 +528,7 @@ async def seed_contract_change_demo(db: AsyncSession):
             "devin_run_id": "devin_notification_sla_005",
             "pr_url": "https://github.com/MadhuvanthiSriPad/notification-service/pull/5",
             "created_at": now - timedelta(hours=1, minutes=8),
-            "updated_at": now - timedelta(minutes=6),
+            "updated_at": now - timedelta(minutes=41),
             "bundle_hash": "notification-sla-005",
             "error_summary": None,
         },

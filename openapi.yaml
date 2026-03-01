@@ -699,6 +699,8 @@ components:
         - priority
         - max_cost_usd
         - sla_tier
+        - compliance_level
+        - data_residency
       properties:
         team_id:
           type: string
@@ -723,6 +725,21 @@ components:
             - standard
             - premium
             - enterprise
+        compliance_level:
+          type: string
+          enum:
+            - none
+            - soc2
+            - hipaa
+            - fedramp
+          description: Required compliance certification level for the session
+        data_residency:
+          type: string
+          enum:
+            - us
+            - eu
+            - ap
+          description: Required data residency region for regulatory compliance
         prompt:
           type: string
           nullable: true
@@ -774,6 +791,22 @@ components:
           nullable: true
         tags:
           type: string
+          nullable: true
+        compliance_level:
+          type: string
+          enum:
+            - none
+            - soc2
+            - hipaa
+            - fedramp
+          nullable: true
+        compliance_status:
+          type: string
+          enum:
+            - pending_review
+            - approved
+            - rejected
+            - exempt
           nullable: true
 
     SessionUpdate:

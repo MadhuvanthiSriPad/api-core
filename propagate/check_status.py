@@ -306,6 +306,13 @@ async def sync_job_statuses(
 
         for job in jobs:
             summary["checked"] += 1
+
+            # Don't re-evaluate jobs that have already reached a terminal state.
+            # Without this guard, failed external API calls (Devin/GitHub) can
+            # downgrade a verified green job back to pr_opened or ci_failed.
+            if job.status in TERMINAL_STATUSES:
+                continue
+
             status = {}
             if job.devin_run_id and client is not None:
                 try:
