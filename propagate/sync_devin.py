@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from propagate.devin_client import DevinClient
-from propagate.check_status import _fetch_github_pr_metadata, sync_job_statuses
+from propagate.check_status import _fetch_github_pr_metadata, _find_replacement_open_pr, sync_job_statuses
 from propagate.notify import emit_webhook
 from propagate.service_map import load_service_map
 from src.config import settings
@@ -46,7 +46,7 @@ def _map_status(devin_status: str, pr_url: str | None) -> str:
             return JobStatus.PR_OPENED.value
         return JobStatus.NEEDS_HUMAN.value
     if status in {"failed", "error", "cancelled"}:
-        return JobStatus.CI_FAILED.value
+        return JobStatus.NEEDS_HUMAN.value
     if status in {"stopped", "finished", "completed", "succeeded", "success"}:
         return JobStatus.PR_OPENED.value if pr_url else JobStatus.GREEN.value
     return JobStatus.RUNNING.value
@@ -453,11 +453,31 @@ async def sync_devin_sessions(
                         job = repo_result.scalar_one_or_none()
 
                 mapped = _map_status(devin_status, active_pr_url)
+                error_summary: str | None = None
                 if raw_pr_url and pr_metadata.get("state") == "closed" and not pr_metadata.get("merged"):
-                    if devin_status == "blocked":
+                    # Try to find a replacement open PR before marking as NEEDS_HUMAN.
+                    replacement_pr = await _find_replacement_open_pr(
+                        raw_pr_url,
+                        preferred_head_ref=str(pr_metadata.get("head_ref") or ""),
+                        preferred_title=str(pr_metadata.get("title") or ""),
+                        preferred_author_login=str(pr_metadata.get("author_login") or ""),
+                        exclude_pr_url=raw_pr_url,
+                    )
+                    # Fallback: search by repo URL if PR-based lookup failed.
+                    if not replacement_pr and repo:
+                        replacement_pr = await _find_replacement_open_pr(
+                            repo, exclude_pr_url=raw_pr_url,
+                        )
+                    if replacement_pr:
+                        pr_url = replacement_pr
+                        active_pr_url = replacement_pr
+                        mapped = _map_status(devin_status, active_pr_url)
+                    else:
                         mapped = JobStatus.NEEDS_HUMAN.value
-                    elif devin_status in {"stopped", "finished", "completed", "succeeded", "success"}:
-                        mapped = JobStatus.CI_FAILED.value
+                        error_summary = "PR closed without merge"
+                elif devin_status in {"failed", "error", "cancelled"}:
+                    mapped = JobStatus.NEEDS_HUMAN.value
+                    error_summary = "Devin session failed"
 
                 # Resolve service name from repo URL.
                 _svc_name = None
@@ -473,12 +493,14 @@ async def sync_devin_sessions(
                         status=mapped,
                         devin_run_id=session_id,
                         pr_url=pr_url,
+                        error_summary=error_summary,
                     )
                     db.add(job)
                     await db.flush()
                     imported += 1
-                    # New job created with PR already open → notify.
-                    if mapped == JobStatus.PR_OPENED.value and active_pr_url:
+                    # Notify only when Devin has authored a notification bundle
+                    # (emitted after PR is created and CI is green).
+                    if active_pr_url and notification_bundle:
                         event_payload = {
                             "event_type": "pr_opened",
                             "change_id": change.id,
@@ -494,13 +516,13 @@ async def sync_devin_sessions(
                             "summary": devin_context.get("brief") or _extract_prompt_summary(detail),
                             "changed_routes": devin_context.get("affected_endpoints", []),
                             "devin_context": devin_context,
+                            "notification_bundle": notification_bundle,
                         }
-                        if notification_bundle:
-                            event_payload["notification_bundle"] = notification_bundle
                         pr_opened_events.append(event_payload)
                 else:
                     # Update only when values changed to avoid unnecessary writes/locks.
                     old_status = job.status
+                    previous_pr_url = job.pr_url
                     dirty = False
                     if job.change_id == 0 and change is not None:
                         job.change_id = change.id
@@ -517,15 +539,15 @@ async def sync_devin_sessions(
                     if job.pr_url != pr_url:
                         job.pr_url = pr_url
                         dirty = True
+                    if job.error_summary != error_summary:
+                        job.error_summary = error_summary
+                        dirty = True
                     if dirty:
                         job.updated_at = datetime.now(timezone.utc)
                         updated += 1
-                    # Existing job transitions to pr_opened with a new PR URL → notify.
-                    if (
-                        mapped == JobStatus.PR_OPENED.value
-                        and active_pr_url
-                        and old_status != JobStatus.PR_OPENED.value
-                    ):
+                    # Notify when Devin authors a notification bundle (after CI green).
+                    # Fire on first bundle appearance regardless of status transition.
+                    if active_pr_url and notification_bundle:
                         event_payload = {
                             "event_type": "pr_opened",
                             "change_id": change.id if change else 0,
@@ -541,9 +563,8 @@ async def sync_devin_sessions(
                             "summary": devin_context.get("brief") or _extract_prompt_summary(detail),
                             "changed_routes": devin_context.get("affected_endpoints", []),
                             "devin_context": devin_context,
+                            "notification_bundle": notification_bundle,
                         }
-                        if notification_bundle:
-                            event_payload["notification_bundle"] = notification_bundle
                         pr_opened_events.append(event_payload)
 
             await db.commit()

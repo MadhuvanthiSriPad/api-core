@@ -40,12 +40,19 @@ def _parse_pr_url(pr_url: str) -> tuple[str, str, str] | None:
     return match.group(1), match.group(2), match.group(3)
 
 
+def _parse_repo_url(repo_url: str) -> tuple[str, str] | None:
+    match = re.match(r"https://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$", repo_url or "")
+    if not match:
+        return None
+    return match.group(1), match.group(2)
+
+
 async def _fetch_github_pr_metadata(pr_url: str) -> dict[str, str | bool]:
     """Fetch GitHub PR metadata needed to validate active PR attachment."""
     github_token = settings.github_token
     parsed = _parse_pr_url(pr_url)
     if not github_token or not parsed:
-        return {"state": "unknown", "merged": False, "head_sha": ""}
+        return {"state": "unknown", "merged": False, "head_sha": "", "head_ref": "", "title": "", "author_login": ""}
 
     owner, repo, pr_number = parsed
 
@@ -59,17 +66,93 @@ async def _fetch_github_pr_metadata(pr_url: str) -> dict[str, str | bool]:
                 },
             )
             if pr_resp.status_code != 200:
-                return {"state": "unknown", "merged": False, "head_sha": ""}
+                return {"state": "unknown", "merged": False, "head_sha": "", "head_ref": "", "title": "", "author_login": ""}
 
             payload = pr_resp.json()
             return {
                 "state": str(payload.get("state") or "unknown"),
                 "merged": bool(payload.get("merged") or False),
                 "head_sha": str(payload.get("head", {}).get("sha") or ""),
+                "head_ref": str(payload.get("head", {}).get("ref") or ""),
+                "title": str(payload.get("title") or ""),
+                "author_login": str(payload.get("user", {}).get("login") or ""),
             }
     except Exception as e:
         logger.warning("GitHub PR metadata fetch failed: %s", e)
-        return {"state": "unknown", "merged": False, "head_sha": ""}
+        return {"state": "unknown", "merged": False, "head_sha": "", "head_ref": "", "title": "", "author_login": ""}
+
+
+async def _find_replacement_open_pr(
+    repo_url_or_pr_url: str,
+    *,
+    preferred_head_ref: str = "",
+    preferred_title: str = "",
+    preferred_author_login: str = "",
+    exclude_pr_url: str = "",
+) -> str | None:
+    """Find an active open PR when a previously attached PR has gone stale."""
+    github_token = settings.github_token
+    parsed_pr = _parse_pr_url(repo_url_or_pr_url)
+    if parsed_pr:
+        owner, repo, _ = parsed_pr
+    else:
+        parsed_repo = _parse_repo_url(repo_url_or_pr_url)
+        if not parsed_repo:
+            return None
+        owner, repo = parsed_repo
+
+    if not github_token:
+        return None
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo}/pulls",
+                params={"state": "open", "per_page": 20},
+                headers={
+                    "Authorization": f"Bearer {github_token}",
+                    "Accept": "application/vnd.github+json",
+                },
+            )
+            if resp.status_code != 200:
+                return None
+            payload = resp.json()
+            if not isinstance(payload, list):
+                return None
+
+            candidates: list[dict] = []
+            for pr in payload:
+                pr_url = str(pr.get("html_url") or "")
+                if not pr_url or pr_url == exclude_pr_url:
+                    continue
+                candidates.append(pr)
+
+            if not candidates:
+                return None
+
+            if preferred_head_ref:
+                for pr in candidates:
+                    if str(pr.get("head", {}).get("ref") or "") == preferred_head_ref:
+                        return str(pr.get("html_url") or "") or None
+
+            if preferred_title:
+                for pr in candidates:
+                    if str(pr.get("title") or "") == preferred_title:
+                        return str(pr.get("html_url") or "") or None
+
+            if preferred_author_login:
+                author_matches = [
+                    pr for pr in candidates
+                    if str(pr.get("user", {}).get("login") or "") == preferred_author_login
+                ]
+                if len(author_matches) == 1:
+                    return str(author_matches[0].get("html_url") or "") or None
+
+            # Fall back to the most recently created open PR.
+            return str(candidates[0].get("html_url") or "") or None
+    except Exception as e:
+        logger.warning("GitHub replacement PR lookup failed: %s", e)
+    return None
 
 
 async def _fetch_github_ci_status(pr_url: str) -> tuple[bool, str]:
@@ -182,7 +265,11 @@ async def sync_job_statuses(
     log_progress: bool = False,
 ) -> dict[str, int]:
     """Sync remediation jobs against live Devin/GitHub state."""
-    client = DevinClient()
+    try:
+        client = DevinClient()
+    except ValueError:
+        client = None
+        logger.warning("Devin API key not configured — skipping Devin polling, GitHub-only mode")
     guardrails = load_guardrails()
     summary = {
         "checked": 0,
@@ -220,10 +307,13 @@ async def sync_job_statuses(
         for job in jobs:
             summary["checked"] += 1
             status = {}
-            if job.devin_run_id:
+            if job.devin_run_id and client is not None:
                 try:
                     status = await client.get_session(job.devin_run_id)
                 except Exception as e:
+                    if "Authentication failed" in str(e):
+                        emit(f"  Devin API auth failed — skipping remaining polls")
+                        break
                     logger.warning("Failed to poll %s: %s", job.devin_run_id, e)
                     emit(f"  [{job.target_repo}] poll error: {e}")
 
@@ -264,15 +354,7 @@ async def sync_job_statuses(
                     emit(f"  [{job.target_repo}] -> PR_OPENED: {job.pr_url}")
                     dirty = True
 
-            if devin_status == "blocked":
-                if job.status != JobStatus.NEEDS_HUMAN.value or job.error_summary != "Devin session blocked":
-                    old = job.status
-                    job.status = JobStatus.NEEDS_HUMAN.value
-                    job.error_summary = "Devin session blocked"
-                    await _log_transition(db, job, old, JobStatus.NEEDS_HUMAN.value, job.error_summary)
-                    emit(f"  [{job.target_repo}] -> NEEDS_HUMAN (blocked)")
-                    dirty = True
-            elif devin_status == "stopped":
+            if devin_status in ("blocked", "stopped") or (not devin_status and client is None):
                 pr_state_url = candidate_pr_url or job.pr_url or ""
                 pr_state_metadata = (
                     candidate_pr_metadata
@@ -282,24 +364,39 @@ async def sync_job_statuses(
                     else {"state": "unknown", "merged": False, "head_sha": ""}
                 )
                 if pr_state_url and pr_state_metadata["state"] == "closed" and not pr_state_metadata["merged"]:
+                    replacement_pr_url = await _find_replacement_open_pr(
+                        pr_state_url,
+                        preferred_head_ref=str(pr_state_metadata.get("head_ref") or ""),
+                        preferred_title=str(pr_state_metadata.get("title") or ""),
+                        preferred_author_login=str(pr_state_metadata.get("author_login") or ""),
+                        exclude_pr_url=pr_state_url,
+                    )
+                    if replacement_pr_url:
+                        if job.pr_url != replacement_pr_url:
+                            job.pr_url = replacement_pr_url
+                            dirty = True
+                        pr_state_url = replacement_pr_url
+                        pr_state_metadata = await _fetch_github_pr_metadata(pr_state_url)
+
+                if pr_state_url and pr_state_metadata["state"] == "closed" and not pr_state_metadata["merged"]:
                     error_summary = "PR closed without merge"
                     if (
-                        job.status != JobStatus.CI_FAILED.value
+                        job.status != JobStatus.NEEDS_HUMAN.value
                         or job.error_summary != error_summary
                         or job.pr_url is not None
                     ):
                         old = job.status
-                        job.status = JobStatus.CI_FAILED.value
+                        job.status = JobStatus.NEEDS_HUMAN.value
                         job.error_summary = error_summary
                         job.pr_url = None
                         await _log_transition(
                             db,
                             job,
                             old,
-                            JobStatus.CI_FAILED.value,
+                            JobStatus.NEEDS_HUMAN.value,
                             f"PR closed without merge: {pr_state_url}",
                         )
-                        emit(f"  [{job.target_repo}] -> CI_FAILED (closed PR): {pr_state_url}")
+                        emit(f"  [{job.target_repo}] -> NEEDS_HUMAN (closed PR): {pr_state_url}")
                         dirty = True
                     if dirty:
                         summary["updated"] += 1
@@ -425,13 +522,25 @@ async def sync_job_statuses(
                             emit(f"  [{job.target_repo}] -> GREEN: {job.pr_url} ({merge_reason})")
                             dirty = True
                 else:
-                    if job.status != JobStatus.CI_FAILED.value or job.error_summary != "Devin stopped without PR":
+                    # No PR on the job — try to discover one in the repo.
+                    replacement_pr_url = await _find_replacement_open_pr(job.target_repo or "") if job.target_repo else None
+                    if replacement_pr_url:
                         old = job.status
-                        job.status = JobStatus.CI_FAILED.value
-                        job.error_summary = "Devin stopped without PR"
-                        await _log_transition(db, job, old, JobStatus.CI_FAILED.value, job.error_summary)
-                        emit(f"  [{job.target_repo}] -> CI_FAILED (no PR)")
+                        job.pr_url = replacement_pr_url
+                        job.status = JobStatus.PR_OPENED.value
+                        job.error_summary = None
+                        await _log_transition(db, job, old, JobStatus.PR_OPENED.value, f"Found PR: {replacement_pr_url}")
+                        emit(f"  [{job.target_repo}] -> PR_OPENED (found replacement): {replacement_pr_url}")
                         dirty = True
+                    else:
+                        no_pr_msg = f"Devin {devin_status} without PR"
+                        if job.status != JobStatus.NEEDS_HUMAN.value or job.error_summary != no_pr_msg:
+                            old = job.status
+                            job.status = JobStatus.NEEDS_HUMAN.value
+                            job.error_summary = no_pr_msg
+                            await _log_transition(db, job, old, JobStatus.NEEDS_HUMAN.value, job.error_summary)
+                            emit(f"  [{job.target_repo}] -> NEEDS_HUMAN (no PR)")
+                            dirty = True
             else:
                 emit(f"  [{job.target_repo}] still {job.status} (devin: {devin_status or 'unknown'})")
 
@@ -452,7 +561,8 @@ async def sync_job_statuses(
                 summary[bucket] += 1
         return summary
     finally:
-        await client.close()
+        if client is not None:
+            await client.close()
 
 
 async def check_jobs(change_id: int | None = None) -> None:

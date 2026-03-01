@@ -24,8 +24,14 @@ def load_service_map(path: str | None = None) -> dict[str, ServiceInfo]:
     if path is None:
         path = str(Path(__file__).resolve().parent.parent / "service_map.yaml")
 
-    with open(path) as f:
-        data = yaml.safe_load(f)
+    try:
+        with open(path) as f:
+            data = yaml.safe_load(f)
+    except OSError:
+        return {}
+
+    if not isinstance(data, dict):
+        return {}
 
     result: dict[str, ServiceInfo] = {}
     for svc_name, svc_data in data.get("services", {}).items():

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import logging
 import re
 import time
 from collections.abc import Iterable
@@ -16,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.database import get_db
+from src.config import settings
 from propagate.check_status import sync_job_statuses
 from propagate.sync_devin import sync_devin_sessions
 from src.entities.contract_change import ContractChange
@@ -30,9 +33,12 @@ from src.schemas.contracts import (
 )
 
 router = APIRouter(prefix="/contracts", tags=["contracts"])
+logger = logging.getLogger(__name__)
 
 _SYNC_COOLDOWN = 30  # seconds between sync calls
 _last_sync_time: float = 0.0
+_last_live_refresh_time: float = 0.0
+_devin_auth_failed: bool = False  # circuit breaker for invalid API keys
 
 CONTRACT_PATH = Path(__file__).resolve().parent.parent.parent / "openapi.yaml"
 _JOB_STATUS_PRIORITY = {
@@ -97,6 +103,76 @@ def _parse_json_string_list(raw: str | None) -> list[str]:
     return [item for item in parsed if isinstance(item, str)]
 
 
+async def _run_live_refresh(
+    db: AsyncSession,
+    *,
+    change_id: int | None = None,
+) -> None:
+    devin_result = await sync_devin_sessions(
+        db=db,
+        limit=settings.devin_sync_limit,
+        include_terminal=True,
+    )
+    status_change_id = devin_result.get("change_id") or change_id
+    await sync_job_statuses(
+        db=db,
+        change_id=status_change_id,
+    )
+
+
+async def _rollback_live_refresh(db: AsyncSession) -> None:
+    try:
+        await db.rollback()
+    except Exception:
+        logger.exception("Failed to rollback after live contract refresh failure")
+
+
+async def _refresh_live_jobs_if_due(
+    db: AsyncSession,
+    *,
+    change_id: int | None = None,
+) -> None:
+    """Refresh live Devin/GitHub state for dashboard reads when enabled.
+
+    The dashboard already polls the GET endpoints periodically. In live mode,
+    this lets normal page refreshes pick up current PR/CI state without a
+    separate manual sync button or a tight background polling loop.
+    """
+    global _last_live_refresh_time, _devin_auth_failed
+
+    if not settings.devin_read_refresh_enabled or not settings.devin_api_key:
+        return
+    if _devin_auth_failed:
+        return
+
+    now = time.monotonic()
+    if now - _last_live_refresh_time < settings.devin_read_refresh_seconds:
+        return
+    _last_live_refresh_time = now
+
+    try:
+        await asyncio.wait_for(
+            _run_live_refresh(
+                db=db,
+                change_id=change_id,
+            ),
+            timeout=settings.devin_read_refresh_timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        await _rollback_live_refresh(db)
+        logger.warning(
+            "Live contract refresh timed out after %.2fs; serving cached contract data",
+            settings.devin_read_refresh_timeout_seconds,
+        )
+    except Exception as exc:
+        await _rollback_live_refresh(db)
+        if "Authentication failed" in str(exc) or "401" in str(exc) or "403" in str(exc):
+            _devin_auth_failed = True
+            logger.warning("Devin API auth failed — disabling live refresh until restart. Check API_CORE_DEVIN_API_KEY.")
+        else:
+            logger.exception("Live contract refresh failed")
+
+
 @router.get("/current", response_model=ContractCurrentResponse)
 async def get_current_contract():
     """Return the current openapi.yaml content and its version hash."""
@@ -119,6 +195,8 @@ async def list_changes(
     db: AsyncSession = Depends(get_db),
 ):
     """List recent contract changes with impact summary."""
+    await _refresh_live_jobs_if_due(db)
+
     result = await db.execute(
         select(ContractChange)
         .options(
@@ -232,6 +310,8 @@ async def get_change_detail(
     db: AsyncSession = Depends(get_db),
 ):
     """Get full detail of a contract change including impacts and remediation jobs."""
+    await _refresh_live_jobs_if_due(db, change_id=change_id)
+
     result = await db.execute(
         select(ContractChange)
         .options(

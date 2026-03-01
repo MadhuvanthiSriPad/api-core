@@ -147,7 +147,29 @@ class TestSyncDevin:
                 result = await sync_devin_sessions(db=db, limit=10, include_terminal=True)
                 row = (await db.execute(select(RemediationJob))).scalar_one()
                 assert row.pr_url is None
-                assert row.status == JobStatus.CI_FAILED.value
+                assert row.status == JobStatus.NEEDS_HUMAN.value
+                assert row.error_summary == "PR closed without merge"
+                assert result["imported"] == 1
+
+    @pytest.mark.asyncio
+    async def test_failed_devin_session_is_needs_human_not_ci_failed(self):
+        mock_client = AsyncMock()
+        mock_client.list_sessions.return_value = [{"session_id": "devin_failed"}]
+        mock_client.get_session.return_value = {
+            "session_id": "devin_failed",
+            "status_enum": "failed",
+            "structured_output": {},
+            "repo": "https://github.com/MadhuvanthiSriPad/billing-service",
+        }
+
+        with patch("propagate.sync_devin.DevinClient", return_value=mock_client), \
+             patch("propagate.sync_devin.load_service_map", return_value=_service_map()):
+            async with TestSession() as db:
+                result = await sync_devin_sessions(db=db, limit=10, include_terminal=True)
+                row = (await db.execute(select(RemediationJob))).scalar_one()
+                assert row.pr_url is None
+                assert row.status == JobStatus.NEEDS_HUMAN.value
+                assert row.error_summary == "Devin session failed"
                 assert result["imported"] == 1
 
     @pytest.mark.asyncio
@@ -253,3 +275,60 @@ class TestSyncDevin:
         assert payload_arg["notification_bundle"]["author"] == "devin"
         assert payload_arg["notification_bundle"]["jira"]["summary"] == "Devin-authored Jira summary"
         assert payload_arg["notification_bundle"]["assertions"]["target_repo"].endswith("/billing-service")
+
+    @pytest.mark.asyncio
+    async def test_existing_job_with_same_pr_url_does_not_reemit_pr_opened_webhook(self):
+        async with TestSession() as db:
+            change = ContractChange(
+                base_ref="a",
+                head_ref="b",
+                is_breaking=True,
+                severity="medium",
+                summary_json='{"summary":"x"}',
+                changed_routes_json='["POST /api/v1/sessions"]',
+                changed_fields_json="[]",
+            )
+            db.add(change)
+            await db.flush()
+            db.add(
+                RemediationJob(
+                    change_id=change.id,
+                    target_repo="https://github.com/MadhuvanthiSriPad/billing-service",
+                    status=JobStatus.CI_FAILED.value,
+                    devin_run_id="devin_replay",
+                    pr_url="https://github.com/MadhuvanthiSriPad/billing-service/pull/303",
+                    bundle_hash="h1",
+                    error_summary="CI status: failed",
+                )
+            )
+            await db.commit()
+
+        mock_client = AsyncMock()
+        mock_client.list_sessions.return_value = [{"session_id": "devin_replay"}]
+        mock_client.get_session.return_value = {
+            "session_id": "devin_replay",
+            "status_enum": "stopped",
+            "structured_output": {
+                "pull_request": {
+                    "url": "https://github.com/MadhuvanthiSriPad/billing-service/pull/303",
+                }
+            },
+        }
+        mock_emit = AsyncMock()
+
+        with (
+            patch("propagate.sync_devin.DevinClient", return_value=mock_client),
+            patch("propagate.sync_devin.load_service_map", return_value=_service_map()),
+            patch("propagate.sync_devin.emit_webhook", mock_emit),
+        ):
+            async with TestSession() as db:
+                result = await sync_devin_sessions(db=db, limit=10, include_terminal=True)
+                row = (
+                    await db.execute(
+                        select(RemediationJob).where(RemediationJob.devin_run_id == "devin_replay")
+                    )
+                ).scalar_one()
+
+        assert result["updated"] >= 1
+        assert row.status == JobStatus.PR_OPENED.value
+        mock_emit.assert_not_awaited()

@@ -67,8 +67,12 @@ python -m propagate --dry-run
 # Check status of in-progress jobs
 python -m propagate.check_status
 
-# Start the API server
-uvicorn src.main:app --reload
+# Start the API server on the default api-core port
+python scripts/run_dev_server.py
+
+# Or, if you want raw uvicorn, restrict reload to project code
+uvicorn src.main:app --host 127.0.0.1 --port 8001 --reload \
+  --reload-dir src --reload-dir propagate --reload-dir scripts
 ```
 
 ## Configuration

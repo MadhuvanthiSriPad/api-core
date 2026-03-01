@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     devin_sync_enabled: bool = False
     devin_sync_interval_seconds: int = 45
     devin_sync_limit: int = 50
+    devin_read_refresh_enabled: bool = True
+    devin_read_refresh_seconds: int = 10
+    devin_read_refresh_timeout_seconds: float = 5.0
 
     # Notification service
     notification_webhook_url: str = ""

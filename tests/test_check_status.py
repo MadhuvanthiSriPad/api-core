@@ -247,6 +247,85 @@ class TestCheckJobs:
                 select(RemediationJob).where(RemediationJob.job_id == job_id)
             )
             job = result.scalar_one()
-            assert job.status == JobStatus.CI_FAILED.value
+            assert job.status == JobStatus.NEEDS_HUMAN.value
             assert job.pr_url is None
             assert job.error_summary == "PR closed without merge"
+
+    @pytest.mark.asyncio
+    async def test_closed_pr_is_replaced_when_new_open_pr_exists(self):
+        job_id = await _create_job(pr_url="https://github.com/org/test/pull/55")
+
+        mock_client = AsyncMock()
+        mock_client.get_session.return_value = {
+            "status_enum": "stopped",
+            "structured_output": {
+                "pull_request": {"url": "https://github.com/org/test/pull/55"},
+                "ci_status": "passed",
+            },
+        }
+
+        metadata_sequence = [
+            {
+                "state": "closed",
+                "merged": False,
+                "head_sha": "deadbeef",
+                "head_ref": "devin/fix-contract",
+                "title": "Fix contract fallout",
+                "author_login": "devin-ai-integration",
+            },
+            {
+                "state": "open",
+                "merged": False,
+                "head_sha": "cafebabe",
+                "head_ref": "devin/fix-contract",
+                "title": "Fix contract fallout",
+                "author_login": "devin-ai-integration",
+            },
+        ]
+
+        with (
+            patch("propagate.check_status.async_session", TestSession),
+            patch("propagate.check_status.DevinClient", return_value=mock_client),
+            patch(
+                "propagate.check_status._fetch_github_pr_metadata",
+                AsyncMock(side_effect=metadata_sequence),
+            ),
+            patch(
+                "propagate.check_status._find_replacement_open_pr",
+                AsyncMock(return_value="https://github.com/org/test/pull/77"),
+            ),
+            patch("propagate.check_status._fetch_github_ci_status", AsyncMock(return_value=(True, "passed"))),
+            patch("propagate.check_status._fetch_pr_changed_files", AsyncMock(return_value=["src/client.py"])),
+        ):
+            await check_jobs()
+
+        async with TestSession() as db:
+            result = await db.execute(
+                select(RemediationJob).where(RemediationJob.job_id == job_id)
+            )
+            job = result.scalar_one()
+            assert job.status == JobStatus.GREEN.value
+            assert job.pr_url == "https://github.com/org/test/pull/77"
+            assert job.error_summary is None
+
+    @pytest.mark.asyncio
+    async def test_stopped_without_pr_is_needs_human(self):
+        job_id = await _create_job(pr_url=None)
+
+        mock_client = AsyncMock()
+        mock_client.get_session.return_value = {
+            "status_enum": "stopped",
+            "structured_output": {},
+        }
+
+        with patch("propagate.check_status.async_session", TestSession), \
+             patch("propagate.check_status.DevinClient", return_value=mock_client):
+            await check_jobs()
+
+        async with TestSession() as db:
+            result = await db.execute(
+                select(RemediationJob).where(RemediationJob.job_id == job_id)
+            )
+            job = result.scalar_one()
+            assert job.status == JobStatus.NEEDS_HUMAN.value
+            assert job.error_summary == "Devin stopped without PR"

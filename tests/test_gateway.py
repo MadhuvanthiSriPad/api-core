@@ -1,5 +1,6 @@
 """Tests for api-core endpoints using SQLite in-memory."""
 
+import asyncio
 import json
 
 import pytest
@@ -485,6 +486,163 @@ class TestContracts:
         assert payload["status_checked"] == 2
         assert payload["status_updated"] == 2
         assert payload["status_green"] == 2
+
+    @pytest.mark.asyncio
+    async def test_changes_endpoint_auto_refreshes_live_state_when_enabled(self, client, monkeypatch):
+        calls = {"devin": 0, "status": 0}
+
+        async def fake_sync_devin_sessions(db, limit=50, include_terminal=True):
+            calls["devin"] += 1
+            return {
+                "synced": 1,
+                "imported": 0,
+                "updated": 1,
+                "skipped": 0,
+                "total_fetched": 1,
+                "change_id": 7,
+            }
+
+        async def fake_sync_job_statuses(db, change_id=None, log_progress=False):
+            calls["status"] += 1
+            assert change_id == 7
+            return {
+                "checked": 1,
+                "updated": 1,
+                "green": 1,
+                "pr_opened": 0,
+                "ci_failed": 0,
+                "needs_human": 0,
+                "running": 0,
+            }
+
+        monkeypatch.setattr(settings, "devin_sync_enabled", False)
+        monkeypatch.setattr(settings, "devin_api_key", "test-devin-key")
+        monkeypatch.setattr(settings, "devin_read_refresh_enabled", True)
+        monkeypatch.setattr(settings, "devin_read_refresh_seconds", 60)
+        monkeypatch.setattr(contracts_routes, "sync_devin_sessions", fake_sync_devin_sessions)
+        monkeypatch.setattr(contracts_routes, "sync_job_statuses", fake_sync_job_statuses)
+        contracts_routes._last_live_refresh_time = 0
+
+        first = await client.get("/api/v1/contracts/changes")
+        second = await client.get("/api/v1/contracts/changes")
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert calls == {"devin": 1, "status": 1}
+
+    @pytest.mark.asyncio
+    async def test_changes_endpoint_returns_stale_data_when_live_refresh_times_out(self, client, monkeypatch):
+        async def slow_sync_devin_sessions(db, limit=50, include_terminal=True):
+            await asyncio.sleep(0.05)
+            return {
+                "synced": 0,
+                "imported": 0,
+                "updated": 0,
+                "skipped": 0,
+                "total_fetched": 0,
+                "change_id": None,
+            }
+
+        monkeypatch.setattr(settings, "devin_sync_enabled", False)
+        monkeypatch.setattr(settings, "devin_api_key", "test-devin-key")
+        monkeypatch.setattr(settings, "devin_read_refresh_enabled", True)
+        monkeypatch.setattr(settings, "devin_read_refresh_seconds", 60)
+        monkeypatch.setattr(settings, "devin_read_refresh_timeout_seconds", 0.01)
+        monkeypatch.setattr(contracts_routes, "sync_devin_sessions", slow_sync_devin_sessions)
+        contracts_routes._last_live_refresh_time = 0
+
+        resp = await client.get("/api/v1/contracts/changes")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    @pytest.mark.asyncio
+    async def test_change_detail_auto_refreshes_requested_change_when_live_sync_returns_none(self, client, monkeypatch):
+        async with TestSession() as db:
+            change = ContractChange(
+                base_ref="main",
+                head_ref="feature/realtime",
+                is_breaking=True,
+                severity="high",
+                summary_json=json.dumps({"summary": "live refresh test"}),
+                changed_routes_json=json.dumps(["POST /api/v1/sessions"]),
+                changed_fields_json="[]",
+            )
+            db.add(change)
+            await db.commit()
+            change_id = change.id
+
+        async def fake_sync_devin_sessions(db, limit=50, include_terminal=True):
+            return {
+                "synced": 0,
+                "imported": 0,
+                "updated": 0,
+                "skipped": 0,
+                "total_fetched": 0,
+                "change_id": None,
+            }
+
+        async def fake_sync_job_statuses(db, change_id=None, log_progress=False):
+            assert change_id == change_id_under_test
+            return {
+                "checked": 0,
+                "updated": 0,
+                "green": 0,
+                "pr_opened": 0,
+                "ci_failed": 0,
+                "needs_human": 0,
+                "running": 0,
+            }
+
+        change_id_under_test = change_id
+        monkeypatch.setattr(settings, "devin_sync_enabled", False)
+        monkeypatch.setattr(settings, "devin_api_key", "test-devin-key")
+        monkeypatch.setattr(settings, "devin_read_refresh_enabled", True)
+        monkeypatch.setattr(settings, "devin_read_refresh_seconds", 60)
+        monkeypatch.setattr(contracts_routes, "sync_devin_sessions", fake_sync_devin_sessions)
+        monkeypatch.setattr(contracts_routes, "sync_job_statuses", fake_sync_job_statuses)
+        contracts_routes._last_live_refresh_time = 0
+
+        resp = await client.get(f"/api/v1/contracts/changes/{change_id_under_test}")
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_change_detail_returns_stale_data_when_live_refresh_times_out(self, client, monkeypatch):
+        async with TestSession() as db:
+            change = ContractChange(
+                base_ref="main",
+                head_ref="feature/timeout",
+                is_breaking=True,
+                severity="high",
+                summary_json=json.dumps({"summary": "timeout refresh test"}),
+                changed_routes_json=json.dumps(["GET /api/v1/contracts/changes/{change_id}"]),
+                changed_fields_json="[]",
+            )
+            db.add(change)
+            await db.commit()
+            change_id = change.id
+
+        async def slow_sync_devin_sessions(db, limit=50, include_terminal=True):
+            await asyncio.sleep(0.05)
+            return {
+                "synced": 0,
+                "imported": 0,
+                "updated": 0,
+                "skipped": 0,
+                "total_fetched": 0,
+                "change_id": None,
+            }
+
+        monkeypatch.setattr(settings, "devin_sync_enabled", False)
+        monkeypatch.setattr(settings, "devin_api_key", "test-devin-key")
+        monkeypatch.setattr(settings, "devin_read_refresh_enabled", True)
+        monkeypatch.setattr(settings, "devin_read_refresh_seconds", 60)
+        monkeypatch.setattr(settings, "devin_read_refresh_timeout_seconds", 0.01)
+        monkeypatch.setattr(contracts_routes, "sync_devin_sessions", slow_sync_devin_sessions)
+        contracts_routes._last_live_refresh_time = 0
+
+        resp = await client.get(f"/api/v1/contracts/changes/{change_id}")
+        assert resp.status_code == 200
+        assert resp.json()["id"] == change_id
 
 
 class TestApiKeyAuth:
