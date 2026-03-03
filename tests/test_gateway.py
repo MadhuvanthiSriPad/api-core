@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
@@ -260,6 +261,58 @@ class TestUsageTelemetry:
         assert "unknown" not in callers
         assert "billing-service" in callers
 
+
+class TestContractDemoControls:
+    @pytest.mark.asyncio
+    async def test_demo_advance_moves_one_stage_at_a_time(self, client):
+        with patch("src.progressive_seed.async_session", TestSession):
+            resp = await client.get("/api/v1/contracts/demo/status")
+            assert resp.status_code == 200
+            assert resp.json()["next_stage"] == "detect"
+
+            detect = await client.post("/api/v1/contracts/demo/advance")
+            assert detect.status_code == 200
+            detect_data = detect.json()
+            assert detect_data["advanced_stage"] == "detect"
+            assert detect_data["next_stage"] == "analyze"
+            assert detect_data["change_id"] is not None
+
+            analyze = await client.post("/api/v1/contracts/demo/advance")
+            assert analyze.status_code == 200
+            analyze_data = analyze.json()
+            assert analyze_data["advanced_stage"] == "analyze"
+            assert analyze_data["next_stage"] == "dispatch"
+
+            dispatch = await client.post("/api/v1/contracts/demo/advance")
+            assert dispatch.status_code == 200
+            assert dispatch.json()["advanced_stage"] == "dispatch"
+            assert dispatch.json()["next_stage"] == "running"
+
+            running = await client.post("/api/v1/contracts/demo/advance")
+            assert running.status_code == 200
+            assert running.json()["advanced_stage"] == "running"
+            assert running.json()["next_stage"] == "billing_pr"
+
+            detail = await client.get(f"/api/v1/contracts/changes/{running.json()['change_id']}")
+            assert detail.status_code == 200
+            jobs = detail.json()["remediation_jobs"]
+            assert len(jobs) == 3
+            assert {job["status"] for job in jobs} == {"running"}
+
+    @pytest.mark.asyncio
+    async def test_demo_reset_clears_contract_recovery_records(self, client):
+        with patch("src.progressive_seed.async_session", TestSession):
+            await client.post("/api/v1/contracts/demo/advance")
+
+            reset = await client.post("/api/v1/contracts/demo/reset")
+            assert reset.status_code == 200
+            assert reset.json()["next_stage"] == "detect"
+            assert reset.json()["change_id"] is None
+
+            resp = await client.get("/api/v1/contracts/changes")
+            assert resp.status_code == 200
+            assert resp.json() == []
+
     @pytest.mark.asyncio
     async def test_top_callers_respects_service_map_visibility(self, client):
         async with TestSession() as db:
@@ -416,7 +469,7 @@ class TestContracts:
                     RemediationJob(
                         change_id=change.id,
                         target_repo="https://github.com/example/billing-service",
-                        status="green",
+                        status="merged",
                         pr_url="https://github.com/example/billing-service/pull/42",
                     ),
                     RemediationJob(
@@ -428,7 +481,7 @@ class TestContracts:
                     RemediationJob(
                         change_id=change.id,
                         target_repo="https://github.com/example/dashboard-service",
-                        status="pr_opened",
+                        status="awaiting_merge",
                         pr_url="https://github.com/example/dashboard-service/pull/17",
                     ),
                     RemediationJob(
@@ -445,9 +498,9 @@ class TestContracts:
         resp = await client.get(f"/api/v1/contracts/changes/{change_id}")
         assert resp.status_code == 200
         jobs = {row["target_repo"]: row for row in resp.json()["remediation_jobs"]}
-        assert jobs["https://github.com/example/billing-service"]["status"] == "green"
+        assert jobs["https://github.com/example/billing-service"]["status"] == "merged"
         assert jobs["https://github.com/example/billing-service"]["pr_url"].endswith("/pull/42")
-        assert jobs["https://github.com/example/dashboard-service"]["status"] == "pr_opened"
+        assert jobs["https://github.com/example/dashboard-service"]["status"] == "awaiting_merge"
         assert jobs["https://github.com/example/dashboard-service"]["pr_url"].endswith("/pull/17")
 
     @pytest.mark.asyncio
@@ -467,8 +520,8 @@ class TestContracts:
             return {
                 "checked": 2,
                 "updated": 2,
-                "green": 2,
-                "pr_opened": 0,
+                "merged": 2,
+                "awaiting_merge": 0,
                 "ci_failed": 0,
                 "needs_human": 0,
                 "running": 0,
@@ -485,7 +538,7 @@ class TestContracts:
         assert payload["updated"] == 3
         assert payload["status_checked"] == 2
         assert payload["status_updated"] == 2
-        assert payload["status_green"] == 2
+        assert payload["status_merged"] == 2
 
     @pytest.mark.asyncio
     async def test_changes_endpoint_auto_refreshes_live_state_when_enabled(self, client, monkeypatch):
@@ -508,8 +561,8 @@ class TestContracts:
             return {
                 "checked": 1,
                 "updated": 1,
-                "green": 1,
-                "pr_opened": 0,
+                "merged": 1,
+                "awaiting_merge": 0,
                 "ci_failed": 0,
                 "needs_human": 0,
                 "running": 0,
@@ -586,8 +639,8 @@ class TestContracts:
             return {
                 "checked": 0,
                 "updated": 0,
-                "green": 0,
-                "pr_opened": 0,
+                "merged": 0,
+                "awaiting_merge": 0,
                 "ci_failed": 0,
                 "needs_human": 0,
                 "running": 0,

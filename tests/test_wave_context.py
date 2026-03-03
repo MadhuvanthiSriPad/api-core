@@ -50,7 +50,7 @@ class TestWaveContextMessaging:
                 context_payload={
                     "source_wave_index": 1,
                     "summary_text": "Wave 1 complete",
-                    "upstream_fix_summaries": [{"repo": "billing-service", "status": "green"}],
+                    "upstream_fix_summaries": [{"repo": "billing-service", "status": "merged"}],
                     "notable_patterns": ["updated API client callsites"],
                     "test_fixtures_changed": ["tests/fixtures/session.json"],
                     "ci_green_prs": ["https://github.com/org/repo/pull/1"],
@@ -85,7 +85,7 @@ class TestWaveContextMessaging:
             job = RemediationJob(
                 change_id=change.id,
                 target_repo="https://github.com/org/billing-service",
-                status=JobStatus.GREEN.value,
+                status=JobStatus.MERGED.value,
                 devin_run_id="sess_alpha",
                 pr_url="https://github.com/org/billing-service/pull/12",
                 bundle_hash="hash1",
@@ -114,7 +114,7 @@ class TestWaveContextMessaging:
         assert payload is not None
         assert payload["source_wave_index"] == 1
         assert payload["upstream_fix_summaries"][0]["repo"] == "billing-service"
-        assert payload["upstream_fix_summaries"][0]["status"] == JobStatus.GREEN.value
+        assert payload["upstream_fix_summaries"][0]["status"] == JobStatus.MERGED.value
         assert payload["ci_green_prs"] == ["https://github.com/org/billing-service/pull/12"]
         assert "updated API client callsites" in payload["notable_patterns"]
         assert "updated tests/fixtures for contract compatibility" in payload["notable_patterns"]

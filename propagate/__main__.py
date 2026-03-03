@@ -33,15 +33,21 @@ from propagate.service_map import load_service_map
 from propagate.bundle import build_fix_bundles
 from propagate.dispatcher import dispatch_remediation_jobs
 from propagate.guardrails import load_guardrails
-from propagate.dependency_graph import build_dependency_graph_from_service_map
+from propagate.dependency_graph import build_dependency_graph_from_service_map, risk_weighted_sort
 from propagate.check_status import check_jobs, TERMINAL_STATUSES
 from propagate.devin_client import DevinClient
+from propagate.simulator import (
+    simulate_contract_changes,
+    format_blast_radius_table,
+    simulation_results_to_dicts,
+)
 
 from src.database import async_session, init_db
 from src.entities.contract_snapshot import ContractSnapshot
 from src.entities.contract_change import ContractChange
 from src.entities.impact_set import ImpactSet
 from src.entities.remediation_job import RemediationJob, JobStatus
+from src.entities.simulation import ContractSimulation
 
 
 CONTRACT_PATH = Path(__file__).resolve().parent.parent / "openapi.yaml"
@@ -223,7 +229,7 @@ async def _build_wave_context_payload(job_ids: list[int], wave_idx: int) -> dict
     ci_green_prs = [
         item["pr_url"]
         for item in upstream_fix_summaries
-        if item.get("status") == JobStatus.GREEN.value and isinstance(item.get("pr_url"), str) and item["pr_url"]
+        if item.get("status") == JobStatus.MERGED.value and isinstance(item.get("pr_url"), str) and item["pr_url"]
     ]
 
     status_parts = [
@@ -418,6 +424,9 @@ async def main(dry_run: bool = False, no_wait: bool = False, ci: bool = False):
             await db.commit()
             return
 
+        print("\n  [pausing 5s before next step...]")
+        await asyncio.sleep(5)
+
         # Step 2: Classify changes
         print("\n--- STEP 2: Classifying changes ---")
         classified = classify_changes(diffs)
@@ -439,6 +448,9 @@ async def main(dry_run: bool = False, no_wait: bool = False, ci: bool = False):
         db.add(change)
         await db.flush()
         print(f"  Stored as change_id={change.id}")
+
+        print("\n  [pausing 5s before next step...]")
+        await asyncio.sleep(5)
 
         # Step 3: Impact mapping — service map is the authoritative source.
         # Services that declare depends_on api-core are always impacted.
@@ -483,6 +495,8 @@ async def main(dry_run: bool = False, no_wait: bool = False, ci: bool = False):
         await db.flush()
         await db.commit()  # release SQLite write lock before remediation_jobs inserts
 
+        print("\n  [pausing 5s before next step...]")
+        await asyncio.sleep(5)
 
         # Step 4: Build dependency graph from already-loaded service map
         print("\n--- STEP 4: Loading service map & dependency graph ---")
@@ -493,6 +507,47 @@ async def main(dry_run: bool = False, no_wait: bool = False, ci: bool = False):
         waves = dep_graph.topological_sort()
         print(f"  Dependency waves: {waves}")
 
+        print("\n  [pausing 5s before next step...]")
+        await asyncio.sleep(5)
+
+        # Step 4b: Pre-merge blast radius simulation
+        print("\n--- STEP 4b: Pre-merge blast radius simulation ---")
+        sim_results = simulate_contract_changes(diffs, svc_map)
+        print(format_blast_radius_table(sim_results))
+
+        # Store simulation results
+        for sim in sim_results:
+            sim_row = ContractSimulation(
+                change_id=change.id,
+                service_name=sim.service,
+                risk_score=sim.risk_score,
+                risk_level=sim.risk_level,
+                breaking_issues_json=json.dumps([
+                    {
+                        "diff_type": issue.diff_type,
+                        "path": issue.path,
+                        "method": issue.method,
+                        "field": issue.field,
+                        "detail": issue.detail,
+                        "weight": issue.weight,
+                    }
+                    for issue in sim.breaking_issues
+                ]),
+                fields_affected=sim.fields_affected,
+                routes_affected=sim.routes_affected,
+            )
+            db.add(sim_row)
+
+        await db.flush()
+
+        # Apply risk-weighted wave ordering
+        risk_scores = {s.service: s.risk_score for s in sim_results}
+        waves = risk_weighted_sort(waves, risk_scores)
+        print(f"  Risk-weighted waves: {waves}")
+
+        print("\n  [pausing 5s before next step...]")
+        await asyncio.sleep(5)
+
         # Step 5: Build fix bundles
         print("\n--- STEP 5: Building fix bundles ---")
         bundles = build_fix_bundles(classified, impacts, svc_map)
@@ -501,6 +556,9 @@ async def main(dry_run: bool = False, no_wait: bool = False, ci: bool = False):
             print(f"    Routes: {b.affected_routes}")
             print(f"    Calls (7d): {b.call_count_7d}")
             print(f"    Bundle hash: {b.bundle_hash}")
+
+        print("\n  [pausing 5s before next step...]")
+        await asyncio.sleep(5)
 
         # Step 6: Dispatch Devin jobs in dependency-aware waves
         print("\n--- STEP 6: Dispatching Devin jobs (wave-ordered) ---")
@@ -551,7 +609,7 @@ async def main(dry_run: bool = False, no_wait: bool = False, ci: bool = False):
                 # Randomized terminal state: GREEN 60%, CI_FAILED 20%, NEEDS_HUMAN 20%
                 roll = random.random()
                 if roll < 0.6:
-                    terminal = "GREEN"
+                    terminal = "MERGED"
                     detail = "CI passed, PR ready for review"
                 elif roll < 0.8:
                     terminal = "CI_FAILED"
@@ -562,7 +620,7 @@ async def main(dry_run: bool = False, no_wait: bool = False, ci: bool = False):
 
                 duration_min = random.randint(15, 90)
 
-                print(f"  [{b.target_service}] QUEUED -> RUNNING -> PR_OPENED -> {terminal} ({duration_min}m)")
+                print(f"  [{b.target_service}] QUEUED -> RUNNING -> AWAITING_MERGE -> {terminal} ({duration_min}m)")
                 print(f"    {detail}")
 
                 sim_job = RemediationJob(
@@ -571,7 +629,7 @@ async def main(dry_run: bool = False, no_wait: bool = False, ci: bool = False):
                     status=terminal.lower(),
                     bundle_hash=b.bundle_hash,
                     is_dry_run=True,
-                    error_summary=detail if terminal != "GREEN" else None,
+                    error_summary=detail if terminal != "MERGED" else None,
                 )
                 db.add(sim_job)
                 sim_results.append((b.target_service, terminal, duration_min, detail))
@@ -588,11 +646,14 @@ async def main(dry_run: bool = False, no_wait: bool = False, ci: bool = False):
                 time_str = f"{mins}m" if mins else "—"
                 print(f"  {svc:<25} {status:<15} {time_str:<8} {detail[:40]}")
 
-            green = sum(1 for _, s, _, _ in sim_results if s == "GREEN")
+            merged = sum(1 for _, s, _, _ in sim_results if s == "MERGED")
             failed = sum(1 for _, s, _, _ in sim_results if s == "CI_FAILED")
             human = sum(1 for _, s, _, _ in sim_results if s == "NEEDS_HUMAN")
-            print(f"\n  Totals: {green} GREEN, {failed} CI_FAILED, {human} NEEDS_HUMAN")
+            print(f"\n  Totals: {merged} MERGED, {failed} CI_FAILED, {human} NEEDS_HUMAN")
             print(f"\n[DRY-RUN] Pipeline complete. {len(bundles)} bundle(s) simulated.")
+
+            print("\n  [pausing 5s before next step...]")
+            await asyncio.sleep(5)
         else:
             next_wave_context: dict[str, Any] | None = None
             for wave_idx, wave_services in enumerate(waves):
@@ -627,6 +688,9 @@ async def main(dry_run: bool = False, no_wait: bool = False, ci: bool = False):
                             next_wave_context = await _build_wave_context_payload(
                                 dispatched_ids, wave_idx
                             )
+
+        print("\n  [pausing 5s before next step...]")
+        await asyncio.sleep(5)
 
         # Step 7: Decide whether snapshot can advance.
         should_store_snapshot = True

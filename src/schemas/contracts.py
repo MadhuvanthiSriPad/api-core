@@ -76,6 +76,50 @@ class ContractChangeResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class BreakingIssueResponse(BaseModel):
+    diff_type: str
+    path: str
+    method: str
+    field: str
+    detail: str
+    weight: float
+
+
+class SimulationResultResponse(BaseModel):
+    id: int
+    service_name: str
+    risk_score: float
+    risk_level: str
+    breaking_issues: list[BreakingIssueResponse] = Field(default_factory=list)
+    fields_affected: int = 0
+    routes_affected: int = 0
+    devin_analysis_id: str | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class SimulationSummaryResponse(BaseModel):
+    change_id: int
+    total_services: int
+    high_risk: int
+    medium_risk: int
+    safe: int
+    simulations: list[SimulationResultResponse] = Field(default_factory=list)
+
+
+class VerifySessionResponse(BaseModel):
+    service_name: str
+    devin_analysis_id: str | None = None
+    error: str | None = None
+
+
+class VerifyResponse(BaseModel):
+    change_id: int
+    dispatched: int
+    sessions: list[VerifySessionResponse] = Field(default_factory=list)
+
+
 class ContractChangeDetailResponse(BaseModel):
     id: int
     base_ref: str | None = None

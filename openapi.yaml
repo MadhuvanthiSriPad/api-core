@@ -35,7 +35,7 @@ paths:
       parameters:
         - name: team_id
           in: query
-          required: false
+          required: true
           schema:
             type: string
         - name: status
@@ -184,6 +184,16 @@ paths:
       summary: List all teams with session counts and costs
       tags:
         - teams
+      parameters:
+        - name: sla_tier
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - standard
+              - premium
+              - enterprise
       responses:
         "200":
           description: List of teams
@@ -567,6 +577,28 @@ paths:
         "404":
           description: Change not found
 
+  /api/v1/contracts/changes/{change_id}/simulation:
+    get:
+      operationId: getContractSimulation
+      summary: Get pre-merge blast radius simulation for a contract change
+      tags:
+        - contracts
+      parameters:
+        - name: change_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Simulation results with per-service risk scores
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SimulationSummaryResponse"
+        "404":
+          description: No simulation results found
+
   /api/v1/contracts/service-graph:
     get:
       operationId: getServiceGraph
@@ -673,11 +705,13 @@ paths:
                   properties:
                     team_id:
                       type: string
+                    sla_tier:
+                      type: string
                     total_sessions:
                       type: integer
                     session_count:
                       type: integer
-                    total_cost:
+                    total_cost_usd:
                       type: number
                     total_input_tokens:
                       type: integer
@@ -701,6 +735,7 @@ components:
         - sla_tier
         - compliance_level
         - data_residency
+        - cost_center
       properties:
         team_id:
           type: string
@@ -740,6 +775,9 @@ components:
             - eu
             - ap
           description: Required data residency region for regulatory compliance
+        cost_center:
+          type: string
+          description: Billing cost center code for chargeback
         prompt:
           type: string
           nullable: true
@@ -768,14 +806,14 @@ components:
           properties:
             input_tokens:
               type: integer
-            completion_tokens:
+            output_tokens:
               type: integer
             cache_read_tokens:
               type: integer
         billing:
           type: object
           properties:
-            total:
+            total_usd:
               type: number
         started_at:
           type: string
@@ -891,7 +929,13 @@ components:
           type: string
         plan:
           type: string
-        monthly_budget:
+        sla_tier:
+          type: string
+          enum:
+            - standard
+            - premium
+            - enterprise
+        monthly_budget_usd:
           type: number
         created_at:
           type: string
@@ -902,7 +946,7 @@ components:
         session_count:
           type: integer
           default: 0
-        total_cost:
+        total_cost_usd:
           type: number
           default: 0.0
 
@@ -1342,3 +1386,66 @@ components:
         detail:
           type: string
           nullable: true
+
+    BreakingIssueResponse:
+      type: object
+      properties:
+        diff_type:
+          type: string
+        path:
+          type: string
+        method:
+          type: string
+        field:
+          type: string
+        detail:
+          type: string
+        weight:
+          type: number
+          format: float
+
+    SimulationResultResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+        service_name:
+          type: string
+        risk_score:
+          type: number
+          format: float
+        risk_level:
+          type: string
+          enum: [high, medium, safe]
+        breaking_issues:
+          type: array
+          items:
+            $ref: "#/components/schemas/BreakingIssueResponse"
+        fields_affected:
+          type: integer
+        routes_affected:
+          type: integer
+        devin_analysis_id:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    SimulationSummaryResponse:
+      type: object
+      properties:
+        change_id:
+          type: integer
+        total_services:
+          type: integer
+        high_risk:
+          type: integer
+        medium_risk:
+          type: integer
+        safe:
+          type: integer
+        simulations:
+          type: array
+          items:
+            $ref: "#/components/schemas/SimulationResultResponse"

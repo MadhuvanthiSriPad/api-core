@@ -21,6 +21,11 @@ from src.database import get_db
 from src.config import settings
 from propagate.check_status import sync_job_statuses
 from propagate.sync_devin import sync_devin_sessions
+from src.progressive_seed import (
+    advance_progressive_demo,
+    get_progressive_demo_status,
+    reset_progressive_demo,
+)
 from src.entities.contract_change import ContractChange
 from src.entities.impact_set import ImpactSet
 from src.entities.remediation_job import RemediationJob
@@ -30,7 +35,13 @@ from src.schemas.contracts import (
     ContractChangeDetailResponse,
     ImpactSetResponse,
     RemediationJobResponse,
+    SimulationResultResponse,
+    SimulationSummaryResponse,
+    BreakingIssueResponse,
+    VerifyResponse,
+    VerifySessionResponse,
 )
+from src.entities.simulation import ContractSimulation
 
 router = APIRouter(prefix="/contracts", tags=["contracts"])
 logger = logging.getLogger(__name__)
@@ -42,13 +53,31 @@ _devin_auth_failed: bool = False  # circuit breaker for invalid API keys
 
 CONTRACT_PATH = Path(__file__).resolve().parent.parent.parent / "openapi.yaml"
 _JOB_STATUS_PRIORITY = {
-    "green": 5,
-    "pr_opened": 4,
+    "merged": 5,
+    "awaiting_merge": 4,
     "running": 3,
     "queued": 2,
     "needs_human": 1,
     "ci_failed": 0,
 }
+
+
+@router.get("/demo/status")
+async def demo_status():
+    """Expose the current step-by-step demo progression state."""
+    return await get_progressive_demo_status()
+
+
+@router.post("/demo/advance")
+async def demo_advance():
+    """Advance the contract-recovery demo by exactly one stage."""
+    return await advance_progressive_demo()
+
+
+@router.post("/demo/reset")
+async def demo_reset():
+    """Reset contract-recovery demo records so the walkthrough can restart."""
+    return await reset_progressive_demo()
 
 
 def _dedupe_jobs_by_repo(jobs: Iterable[RemediationJob]) -> list[RemediationJob]:
@@ -57,7 +86,7 @@ def _dedupe_jobs_by_repo(jobs: Iterable[RemediationJob]) -> list[RemediationJob]
     Multiple historical jobs can exist for the same repository. For dashboard
     rendering we prefer the most progressed visible state for that repo rather
     than blindly taking the latest timestamp, because stale duplicate rows can
-    otherwise hide a newer PR/green state behind an older sync artifact.
+    otherwise hide a newer PR/merged state behind an older sync artifact.
     """
     by_repo: dict[str, RemediationJob] = {}
 
@@ -219,12 +248,12 @@ async def list_changes(
         )
         unique_services_list = sorted(unique_services)
         target_repos = sorted({j.target_repo for j in jobs if j.target_repo})
-        active_jobs = sum(1 for j in jobs if j.status in {"queued", "running", "pr_opened"})
+        active_jobs = sum(1 for j in jobs if j.status in {"queued", "running", "awaiting_merge"})
         pr_count = len({j.pr_url for j in jobs if j.pr_url})
         if not jobs:
             rem_status = "pending"
-        elif all(j.status == "green" for j in jobs):
-            rem_status = "all_green"
+        elif all(j.status == "merged" for j in jobs):
+            rem_status = "all_merged"
         elif any(j.status == "needs_human" for j in jobs):
             rem_status = "needs_human"
         else:
@@ -283,11 +312,22 @@ async def sync_live_jobs(
             headers={"Retry-After": str(remaining)},
         )
     _last_sync_time = now
-    devin_result = await sync_devin_sessions(
-        db=db,
-        limit=limit,
-        include_terminal=include_terminal,
-    )
+    try:
+        devin_result = await sync_devin_sessions(
+            db=db,
+            limit=limit,
+            include_terminal=include_terminal,
+        )
+    except ValueError as exc:
+        if "api_key" in str(exc).lower() or "DEVIN_API_KEY" in str(exc):
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "kind": "no_api_key",
+                    "message": "Devin API key not configured. Set DEVIN_API_KEY to enable sync.",
+                },
+            )
+        raise
     status_result = await sync_job_statuses(
         db=db,
         change_id=devin_result.get("change_id"),
@@ -297,8 +337,8 @@ async def sync_live_jobs(
         "updated": int(devin_result.get("updated", 0)) + int(status_result.get("updated", 0)),
         "status_checked": status_result.get("checked", 0),
         "status_updated": status_result.get("updated", 0),
-        "status_green": status_result.get("green", 0),
-        "status_pr_opened": status_result.get("pr_opened", 0),
+        "status_merged": status_result.get("merged", 0),
+        "status_awaiting_merge": status_result.get("awaiting_merge", 0),
         "status_ci_failed": status_result.get("ci_failed", 0),
         "status_needs_human": status_result.get("needs_human", 0),
     }
@@ -358,6 +398,152 @@ async def get_change_detail(
         changed_routes=changed_routes,
         impact_sets=[ImpactSetResponse.model_validate(imp) for imp in change.impact_sets],
         remediation_jobs=[RemediationJobResponse.model_validate(job) for job in jobs],
+    )
+
+
+@router.get("/changes/{change_id}/simulation", response_model=SimulationSummaryResponse)
+async def get_change_simulation(
+    change_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get pre-merge blast radius simulation for a contract change."""
+    result = await db.execute(
+        select(ContractSimulation)
+        .where(ContractSimulation.change_id == change_id)
+        .order_by(ContractSimulation.risk_score.desc())
+    )
+    simulations = list(result.scalars().all())
+
+    if not simulations:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No simulation results found for change {change_id}",
+        )
+
+    sim_responses = []
+    for sim in simulations:
+        try:
+            issues_raw = json.loads(sim.breaking_issues_json) if sim.breaking_issues_json else []
+        except json.JSONDecodeError:
+            issues_raw = []
+
+        sim_responses.append(SimulationResultResponse(
+            id=sim.id,
+            service_name=sim.service_name,
+            risk_score=sim.risk_score,
+            risk_level=sim.risk_level,
+            breaking_issues=[BreakingIssueResponse(**issue) for issue in issues_raw],
+            fields_affected=sim.fields_affected,
+            routes_affected=sim.routes_affected,
+            devin_analysis_id=sim.devin_analysis_id,
+            created_at=sim.created_at,
+        ))
+
+    high = sum(1 for s in simulations if s.risk_level == "high")
+    medium = sum(1 for s in simulations if s.risk_level == "medium")
+    safe = sum(1 for s in simulations if s.risk_level == "safe")
+
+    return SimulationSummaryResponse(
+        change_id=change_id,
+        total_services=len(simulations),
+        high_risk=high,
+        medium_risk=medium,
+        safe=safe,
+        simulations=sim_responses,
+    )
+
+
+@router.post("/changes/{change_id}/simulation/verify", response_model=VerifyResponse)
+async def verify_high_risk_simulations(
+    change_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Dispatch Devin code-aware verification for high-risk simulated services."""
+    from propagate.differ import ContractDiff
+    from propagate.service_map import load_service_map
+    from propagate.simulator import request_devin_analysis, SimulationResult, BreakingIssue
+
+    result = await db.execute(
+        select(ContractSimulation)
+        .where(
+            ContractSimulation.change_id == change_id,
+            ContractSimulation.risk_level == "high",
+        )
+    )
+    high_risk_sims = list(result.scalars().all())
+
+    if not high_risk_sims:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No high-risk simulations found for change {change_id}",
+        )
+
+    svc_map = load_service_map()
+    sessions: list[VerifySessionResponse] = []
+
+    for sim in high_risk_sims:
+        svc_info = svc_map.get(sim.service_name)
+        if not svc_info:
+            sessions.append(VerifySessionResponse(
+                service_name=sim.service_name,
+                error="Service not found in service map",
+            ))
+            continue
+
+        # Reconstruct breaking issues from stored JSON
+        try:
+            issues_raw = json.loads(sim.breaking_issues_json) if sim.breaking_issues_json else []
+        except json.JSONDecodeError:
+            issues_raw = []
+
+        sim_result = SimulationResult(
+            service=sim.service_name,
+            risk_score=sim.risk_score,
+            risk_level=sim.risk_level,
+            breaking_issues=[
+                BreakingIssue(**issue) for issue in issues_raw
+            ],
+            fields_affected=sim.fields_affected,
+            routes_affected=sim.routes_affected,
+        )
+
+        # Build minimal diffs from stored issues for the prompt
+        diffs = [
+            ContractDiff(
+                diff_type=issue.diff_type,
+                path=issue.path,
+                method=issue.method,
+                field=issue.field,
+                old_value="",
+                new_value="",
+            )
+            for issue in sim_result.breaking_issues
+        ]
+
+        try:
+            analysis_id = await request_devin_analysis(
+                sim.service_name, svc_info, diffs, sim_result, change_id,
+            )
+            if analysis_id:
+                sim.devin_analysis_id = analysis_id
+                await db.flush()
+            sessions.append(VerifySessionResponse(
+                service_name=sim.service_name,
+                devin_analysis_id=analysis_id,
+            ))
+        except Exception as e:
+            sessions.append(VerifySessionResponse(
+                service_name=sim.service_name,
+                error=str(e),
+            ))
+
+    await db.commit()
+
+    dispatched = sum(1 for s in sessions if s.devin_analysis_id)
+    return VerifyResponse(
+        change_id=change_id,
+        dispatched=dispatched,
+        sessions=sessions,
     )
 
 

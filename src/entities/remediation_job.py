@@ -13,10 +13,10 @@ from src.config import settings
 class JobStatus(str, enum.Enum):
     QUEUED = "queued"
     RUNNING = "running"
-    PR_OPENED = "pr_opened"
+    AWAITING_MERGE = "awaiting_merge"
     CI_FAILED = "ci_failed"
     NEEDS_HUMAN = "needs_human"
-    GREEN = "green"
+    MERGED = "merged"
 
 
 class RemediationJob(Base):

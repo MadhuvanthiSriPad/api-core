@@ -118,7 +118,7 @@ class TestSyncDevin:
                     )
                 ).scalar_one()
                 assert row.pr_url == "https://github.com/MadhuvanthiSriPad/dashboard-service/pull/88"
-                assert row.status == JobStatus.PR_OPENED.value
+                assert row.status == JobStatus.AWAITING_MERGE.value
                 assert result["updated"] >= 1
 
     @pytest.mark.asyncio
@@ -330,5 +330,5 @@ class TestSyncDevin:
                 ).scalar_one()
 
         assert result["updated"] >= 1
-        assert row.status == JobStatus.PR_OPENED.value
+        assert row.status == JobStatus.AWAITING_MERGE.value
         mock_emit.assert_not_awaited()

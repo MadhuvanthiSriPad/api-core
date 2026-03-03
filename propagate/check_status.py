@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 CI_UNKNOWN_MAX_ATTEMPTS = 5  # After this many polls with "unknown" CI, fail closed
 TERMINAL_STATUSES = {
-    JobStatus.GREEN.value,
+    JobStatus.MERGED.value,
     JobStatus.CI_FAILED.value,
     JobStatus.NEEDS_HUMAN.value,
 }
@@ -274,8 +274,8 @@ async def sync_job_statuses(
     summary = {
         "checked": 0,
         "updated": 0,
-        "green": 0,
-        "pr_opened": 0,
+        "merged": 0,
+        "awaiting_merge": 0,
         "ci_failed": 0,
         "needs_human": 0,
         "running": 0,
@@ -309,7 +309,7 @@ async def sync_job_statuses(
 
             # Don't re-evaluate jobs that have already reached a terminal state.
             # Without this guard, failed external API calls (Devin/GitHub) can
-            # downgrade a verified green job back to pr_opened or ci_failed.
+            # downgrade a verified merged job back to awaiting_merge or ci_failed.
             if job.status in TERMINAL_STATUSES:
                 continue
 
@@ -351,14 +351,14 @@ async def sync_job_statuses(
 
                 if (
                     job.pr_url
-                    and job.status not in {JobStatus.PR_OPENED.value, JobStatus.GREEN.value}
+                    and job.status not in {JobStatus.AWAITING_MERGE.value, JobStatus.MERGED.value}
                     and devin_status not in {"stopped", "blocked"}
                 ):
                     old = job.status
-                    job.status = JobStatus.PR_OPENED.value
+                    job.status = JobStatus.AWAITING_MERGE.value
                     job.error_summary = None
-                    await _log_transition(db, job, old, JobStatus.PR_OPENED.value, f"PR: {job.pr_url}")
-                    emit(f"  [{job.target_repo}] -> PR_OPENED: {job.pr_url}")
+                    await _log_transition(db, job, old, JobStatus.AWAITING_MERGE.value, f"PR: {job.pr_url}")
+                    emit(f"  [{job.target_repo}] -> AWAITING_MERGE: {job.pr_url}")
                     dirty = True
 
             if devin_status in ("blocked", "stopped") or (not devin_status and client is None):
@@ -448,21 +448,21 @@ async def sync_job_statuses(
                                     dirty = True
                             else:
                                 detail = (
-                                    f"CI status unknown, holding at PR_OPENED (attempt {ci_unknown_count + 1}/{CI_UNKNOWN_MAX_ATTEMPTS}): {job.pr_url}"
+                                    f"CI status unknown, holding at AWAITING_MERGE (attempt {ci_unknown_count + 1}/{CI_UNKNOWN_MAX_ATTEMPTS}): {job.pr_url}"
                                 )
-                                if job.status != JobStatus.PR_OPENED.value:
+                                if job.status != JobStatus.AWAITING_MERGE.value:
                                     old = job.status
-                                    job.status = JobStatus.PR_OPENED.value
+                                    job.status = JobStatus.AWAITING_MERGE.value
                                     job.error_summary = None
                                     await _log_transition(
                                         db,
                                         job,
                                         old,
-                                        JobStatus.PR_OPENED.value,
+                                        JobStatus.AWAITING_MERGE.value,
                                         detail,
                                     )
                                     emit(
-                                        f"  [{job.target_repo}] -> PR_OPENED (CI unknown, attempt {ci_unknown_count + 1}/{CI_UNKNOWN_MAX_ATTEMPTS}): {job.pr_url}"
+                                        f"  [{job.target_repo}] -> AWAITING_MERGE (CI unknown, attempt {ci_unknown_count + 1}/{CI_UNKNOWN_MAX_ATTEMPTS}): {job.pr_url}"
                                     )
                                     dirty = True
                         else:
@@ -521,12 +521,12 @@ async def sync_job_statuses(
 
                         _merge_ok, merge_reason = guardrails.check_can_merge(ci_passed)
                         detail = f"PR: {job.pr_url} | merge: {merge_reason}"
-                        if job.status != JobStatus.GREEN.value or job.error_summary is not None:
+                        if job.status != JobStatus.MERGED.value or job.error_summary is not None:
                             old = job.status
-                            job.status = JobStatus.GREEN.value
+                            job.status = JobStatus.MERGED.value
                             job.error_summary = None
-                            await _log_transition(db, job, old, JobStatus.GREEN.value, detail)
-                            emit(f"  [{job.target_repo}] -> GREEN: {job.pr_url} ({merge_reason})")
+                            await _log_transition(db, job, old, JobStatus.MERGED.value, detail)
+                            emit(f"  [{job.target_repo}] -> MERGED: {job.pr_url} ({merge_reason})")
                             dirty = True
                 else:
                     # No PR on the job — try to discover one in the repo.
@@ -534,10 +534,10 @@ async def sync_job_statuses(
                     if replacement_pr_url:
                         old = job.status
                         job.pr_url = replacement_pr_url
-                        job.status = JobStatus.PR_OPENED.value
+                        job.status = JobStatus.AWAITING_MERGE.value
                         job.error_summary = None
-                        await _log_transition(db, job, old, JobStatus.PR_OPENED.value, f"Found PR: {replacement_pr_url}")
-                        emit(f"  [{job.target_repo}] -> PR_OPENED (found replacement): {replacement_pr_url}")
+                        await _log_transition(db, job, old, JobStatus.AWAITING_MERGE.value, f"Found PR: {replacement_pr_url}")
+                        emit(f"  [{job.target_repo}] -> AWAITING_MERGE (found replacement): {replacement_pr_url}")
                         dirty = True
                     else:
                         no_pr_msg = f"Devin {devin_status} without PR"
@@ -556,8 +556,8 @@ async def sync_job_statuses(
 
         await db.commit()
         status_counts = {
-            JobStatus.GREEN.value: "green",
-            JobStatus.PR_OPENED.value: "pr_opened",
+            JobStatus.MERGED.value: "merged",
+            JobStatus.AWAITING_MERGE.value: "awaiting_merge",
             JobStatus.CI_FAILED.value: "ci_failed",
             JobStatus.NEEDS_HUMAN.value: "needs_human",
             JobStatus.RUNNING.value: "running",

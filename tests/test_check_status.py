@@ -51,7 +51,7 @@ async def _create_job(status=JobStatus.RUNNING.value, devin_run_id="devin_123", 
 class TestCheckJobs:
     @pytest.mark.asyncio
     async def test_pr_opened_transition(self):
-        """Job transitions to PR_OPENED when structured_output has pull_request."""
+        """Job transitions to AWAITING_MERGE when structured_output has pull_request."""
         job_id = await _create_job()
 
         mock_client = AsyncMock()
@@ -71,7 +71,7 @@ class TestCheckJobs:
                 select(RemediationJob).where(RemediationJob.job_id == job_id)
             )
             job = result.scalar_one()
-            assert job.status == JobStatus.PR_OPENED.value
+            assert job.status == JobStatus.AWAITING_MERGE.value
             assert job.pr_url == "https://github.com/org/test/pull/1"
 
     @pytest.mark.asyncio
@@ -98,7 +98,7 @@ class TestCheckJobs:
 
     @pytest.mark.asyncio
     async def test_green_on_ci_passed(self):
-        """Job transitions to GREEN when CI passes."""
+        """Job transitions to MERGED when CI passes."""
         job_id = await _create_job(pr_url="https://github.com/org/test/pull/1")
 
         mock_client = AsyncMock()
@@ -121,7 +121,7 @@ class TestCheckJobs:
                 select(RemediationJob).where(RemediationJob.job_id == job_id)
             )
             job = result.scalar_one()
-            assert job.status == JobStatus.GREEN.value
+            assert job.status == JobStatus.MERGED.value
 
     @pytest.mark.asyncio
     async def test_ci_failed_on_failure(self):
@@ -151,9 +151,9 @@ class TestCheckJobs:
 
     @pytest.mark.asyncio
     async def test_ci_unknown_holds_at_pr_opened(self):
-        """Job stays at PR_OPENED when CI status is unknown (first attempts)."""
+        """Job stays at AWAITING_MERGE when CI status is unknown (first attempts)."""
         job_id = await _create_job(
-            status=JobStatus.PR_OPENED.value,
+            status=JobStatus.AWAITING_MERGE.value,
             pr_url="https://github.com/org/test/pull/1",
         )
 
@@ -176,13 +176,13 @@ class TestCheckJobs:
                 select(RemediationJob).where(RemediationJob.job_id == job_id)
             )
             job = result.scalar_one()
-            assert job.status == JobStatus.PR_OPENED.value
+            assert job.status == JobStatus.AWAITING_MERGE.value
 
     @pytest.mark.asyncio
     async def test_ci_unknown_fails_closed_after_max_attempts(self):
         """Job transitions to CI_FAILED after max unknown CI attempts."""
         job_id = await _create_job(
-            status=JobStatus.PR_OPENED.value,
+            status=JobStatus.AWAITING_MERGE.value,
             pr_url="https://github.com/org/test/pull/1",
         )
 
@@ -191,9 +191,9 @@ class TestCheckJobs:
             for i in range(CI_UNKNOWN_MAX_ATTEMPTS):
                 db.add(AuditLog(
                     job_id=job_id,
-                    old_status="pr_opened",
-                    new_status="pr_opened",
-                    detail=f"CI status unknown, holding at PR_OPENED (attempt {i + 1}/{CI_UNKNOWN_MAX_ATTEMPTS}): url",
+                    old_status="awaiting_merge",
+                    new_status="awaiting_merge",
+                    detail=f"CI status unknown, holding at AWAITING_MERGE (attempt {i + 1}/{CI_UNKNOWN_MAX_ATTEMPTS}): url",
                 ))
             await db.commit()
 
@@ -304,7 +304,7 @@ class TestCheckJobs:
                 select(RemediationJob).where(RemediationJob.job_id == job_id)
             )
             job = result.scalar_one()
-            assert job.status == JobStatus.GREEN.value
+            assert job.status == JobStatus.MERGED.value
             assert job.pr_url == "https://github.com/org/test/pull/77"
             assert job.error_summary is None
 

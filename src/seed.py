@@ -1,4 +1,4 @@
-"""Seed a coherent demo dataset with moderate, believable production numbers."""
+"""Seed a realistic 2-day demo dataset for a live walkthrough."""
 
 from __future__ import annotations
 
@@ -15,12 +15,13 @@ from src.entities.audit_log import AuditLog
 from src.entities.contract_change import ContractChange
 from src.entities.impact_set import ImpactSet
 from src.entities.remediation_job import RemediationJob, JobStatus
+from src.entities.simulation import ContractSimulation
 from src.entities.team import Team
 from src.entities.token_usage import TokenUsage
 from src.entities.usage_request import UsageRequest
 
 RANDOM_SEED = 20260301
-DAYS_OF_HISTORY = 21
+DAYS_OF_HISTORY = 2
 
 TEAMS = [
     {"id": "team_platform", "name": "Platform Engineering", "plan": "enterprise", "monthly_budget": 6000.0},
@@ -32,8 +33,8 @@ TEAMS = [
 
 TEAM_PROFILES = {
     "team_platform": {
-        "weekday_sessions": (4, 6),
-        "weekend_sessions": (1, 2),
+        "weekday_sessions": (2, 3),
+        "weekend_sessions": (1, 1),
         "agents": ("migration-planner", "contract-reviewer", "deploy-assistant"),
         "tags": ("platform", "premium-sla", "contracts"),
         "prompts": (
@@ -45,8 +46,8 @@ TEAM_PROFILES = {
         "hour_weights": [1, 1, 1, 1, 1, 1, 2, 4, 7, 8, 8, 8, 7, 7, 7, 7, 5, 3, 2, 1, 1, 1, 1, 1],
     },
     "team_product": {
-        "weekday_sessions": (3, 5),
-        "weekend_sessions": (1, 2),
+        "weekday_sessions": (1, 2),
+        "weekend_sessions": (0, 1),
         "agents": ("release-coordinator", "feature-analyst", "qa-triager"),
         "tags": ("product", "launch", "enterprise"),
         "prompts": (
@@ -58,7 +59,7 @@ TEAM_PROFILES = {
         "hour_weights": [1, 1, 1, 1, 1, 1, 2, 3, 5, 7, 7, 8, 8, 8, 8, 7, 5, 3, 2, 1, 1, 1, 1, 1],
     },
     "team_finance": {
-        "weekday_sessions": (2, 3),
+        "weekday_sessions": (1, 2),
         "weekend_sessions": (0, 1),
         "agents": ("invoice-orchestrator", "budget-auditor", "reconciliation-bot"),
         "tags": ("finance", "billing", "controls"),
@@ -71,8 +72,8 @@ TEAM_PROFILES = {
         "hour_weights": [1, 1, 1, 1, 1, 1, 2, 5, 7, 8, 8, 8, 7, 7, 6, 5, 3, 2, 1, 1, 1, 1, 1, 1],
     },
     "team_support": {
-        "weekday_sessions": (1, 3),
-        "weekend_sessions": (1, 2),
+        "weekday_sessions": (1, 2),
+        "weekend_sessions": (0, 1),
         "agents": ("ticket-triager", "incident-summarizer", "notification-worker"),
         "tags": ("support", "notifications", "ops"),
         "prompts": (
@@ -84,7 +85,7 @@ TEAM_PROFILES = {
         "hour_weights": [1, 1, 1, 1, 1, 1, 2, 3, 4, 5, 6, 7, 7, 7, 6, 6, 5, 4, 3, 2, 1, 1, 1, 1],
     },
     "team_data": {
-        "weekday_sessions": (1, 2),
+        "weekday_sessions": (0, 1),
         "weekend_sessions": (0, 1),
         "agents": ("usage-analyst", "forecast-bot", "report-generator"),
         "tags": ("data", "analytics", "reporting"),
@@ -140,12 +141,9 @@ NOTIFICATION_ROUTES = [
 NOTIFICATION_WEIGHTS = [5, 2, 1, 1]
 
 
-def _session_count(profile: dict, weekday: int, day_offset: int, rng: random.Random) -> int:
+def _session_count(profile: dict, weekday: int, rng: random.Random) -> int:
     bounds = profile["weekday_sessions"] if weekday < 5 else profile["weekend_sessions"]
-    count = rng.randint(*bounds)
-    if day_offset <= 2 and weekday < 5:
-        count += 1
-    return count
+    return rng.randint(*bounds)
 
 
 def _sample_timestamp(
@@ -279,7 +277,7 @@ def _error_message(status: str, team_id: str, rng: random.Random) -> str | None:
 
 
 async def seed_data(db: AsyncSession):
-    """Seed the database with a believable demo dataset."""
+    """Seed the database with a realistic 2-day demo dataset."""
     rng = random.Random(RANDOM_SEED)
     now = datetime.now(timezone.utc)
 
@@ -294,7 +292,7 @@ async def seed_data(db: AsyncSession):
 
         for team_data in TEAMS:
             profile = TEAM_PROFILES[team_data["id"]]
-            for _ in range(_session_count(profile, weekday, day_offset, rng)):
+            for _ in range(_session_count(profile, weekday, rng)):
                 started = _sample_timestamp(now, day_start, profile["hour_weights"], rng)
                 status = _status_for_day(day_offset, rng)
                 ended_at, duration_seconds = _duration_for_status(status, started, now, rng)
@@ -348,11 +346,13 @@ async def seed_data(db: AsyncSession):
 
     await db.commit()
     await seed_usage_requests(db, rng)
-    await seed_contract_change_demo(db)
+    from src.config import settings
+    if not settings.demo_mode:
+        await seed_contract_change_demo(db)
 
 
 async def seed_usage_requests(db: AsyncSession, rng: random.Random):
-    """Seed small but believable cross-service telemetry."""
+    """Seed realistic 2-day cross-service telemetry."""
     now = datetime.now(timezone.utc)
 
     async def add_requests(
@@ -384,14 +384,9 @@ async def seed_usage_requests(db: AsyncSession, rng: random.Random):
         day_start = (now - timedelta(days=day_offset)).replace(hour=0, minute=0, second=0, microsecond=0)
         weekday = day_start.weekday()
 
-        billing_count = rng.randint(12, 18) if weekday < 5 else rng.randint(6, 9)
-        dashboard_count = rng.randint(18, 26) if weekday < 5 else rng.randint(9, 13)
-        notification_count = rng.randint(6, 10) if weekday < 5 else rng.randint(3, 6)
-
-        if day_offset <= 2 and weekday < 5:
-            billing_count += 2
-            dashboard_count += 3
-            notification_count += 1
+        billing_count = rng.randint(4, 8) if weekday < 5 else rng.randint(2, 4)
+        dashboard_count = rng.randint(6, 12) if weekday < 5 else rng.randint(3, 6)
+        notification_count = rng.randint(2, 5) if weekday < 5 else rng.randint(1, 3)
 
         await add_requests(
             caller_service="billing-service",
@@ -431,7 +426,7 @@ async def seed_usage_requests(db: AsyncSession, rng: random.Random):
 
 
 async def seed_contract_change_demo(db: AsyncSession):
-    """Seed a moderate-scale enterprise incident around a premium SLA launch."""
+    """Seed the premium SLA launch incident for demo walkthrough."""
     now = datetime.now(timezone.utc)
 
     change = ContractChange(
@@ -465,7 +460,7 @@ async def seed_contract_change_demo(db: AsyncSession):
             route_template="/api/v1/sessions",
             method="POST",
             caller_service="billing-service",
-            calls_last_7d=28,
+            calls_last_7d=8,
             confidence="high",
             notes="Invoice backfill and reconciliation jobs create sessions with budget controls",
         ),
@@ -474,7 +469,7 @@ async def seed_contract_change_demo(db: AsyncSession):
             route_template="/api/v1/sessions",
             method="GET",
             caller_service="billing-service",
-            calls_last_7d=44,
+            calls_last_7d=12,
             confidence="high",
             notes="Finance rollups and invoice review pages read normalized billing fields",
         ),
@@ -483,7 +478,7 @@ async def seed_contract_change_demo(db: AsyncSession):
             route_template="/api/v1/sessions/{session_id}",
             method="GET",
             caller_service="dashboard-service",
-            calls_last_7d=78,
+            calls_last_7d=22,
             confidence="high",
             notes="Session drill-down cards and remediation detail views use the full response shape",
         ),
@@ -492,7 +487,7 @@ async def seed_contract_change_demo(db: AsyncSession):
             route_template="/api/v1/sessions/{session_id}",
             method="GET",
             caller_service="notification-service",
-            calls_last_7d=31,
+            calls_last_7d=9,
             confidence="high",
             notes="Recovery reports enrich Slack and Jira updates with current session details",
         ),
@@ -504,31 +499,31 @@ async def seed_contract_change_demo(db: AsyncSession):
     jobs_spec = [
         {
             "target_repo": "https://github.com/MadhuvanthiSriPad/billing-service",
-            "status": JobStatus.GREEN.value,
+            "status": JobStatus.AWAITING_MERGE.value,
             "devin_run_id": "devin_billing_sla_012",
-            "pr_url": "https://github.com/MadhuvanthiSriPad/billing-service/pull/12",
-            "created_at": now - timedelta(hours=1, minutes=24),
-            "updated_at": now - timedelta(minutes=56),
+            "pr_url": "https://github.com/MadhuvanthiSriPad/billing-service/pull/8",
+            "created_at": now - timedelta(hours=7, minutes=38),
+            "updated_at": now - timedelta(hours=7, minutes=2),
             "bundle_hash": "billing-sla-012",
             "error_summary": None,
         },
         {
             "target_repo": "https://github.com/MadhuvanthiSriPad/dashboard-service",
-            "status": JobStatus.GREEN.value,
+            "status": JobStatus.AWAITING_MERGE.value,
             "devin_run_id": "devin_dashboard_sla_009",
-            "pr_url": "https://github.com/MadhuvanthiSriPad/dashboard-service/pull/9",
-            "created_at": now - timedelta(hours=1, minutes=17),
-            "updated_at": now - timedelta(minutes=45),
+            "pr_url": "https://github.com/MadhuvanthiSriPad/dashboard-service/pull/4",
+            "created_at": now - timedelta(hours=5, minutes=42),
+            "updated_at": now - timedelta(hours=5, minutes=7),
             "bundle_hash": "dashboard-sla-009",
             "error_summary": None,
         },
         {
             "target_repo": "https://github.com/MadhuvanthiSriPad/notification-service",
-            "status": JobStatus.GREEN.value,
+            "status": JobStatus.AWAITING_MERGE.value,
             "devin_run_id": "devin_notification_sla_005",
-            "pr_url": "https://github.com/MadhuvanthiSriPad/notification-service/pull/5",
-            "created_at": now - timedelta(hours=1, minutes=8),
-            "updated_at": now - timedelta(minutes=41),
+            "pr_url": "https://github.com/MadhuvanthiSriPad/notification-service/pull/6",
+            "created_at": now - timedelta(hours=8, minutes=12),
+            "updated_at": now - timedelta(hours=8, minutes=1),
             "bundle_hash": "notification-sla-005",
             "error_summary": None,
         },
@@ -542,40 +537,35 @@ async def seed_contract_change_demo(db: AsyncSession):
         jobs.append(job)
 
     audit_entries = [
+        # billing-service: queued → running → awaiting_merge
         AuditLog(
             job_id=jobs[0].job_id,
             old_status=None,
             new_status="queued",
             changed_at=jobs[0].created_at,
-            detail="Wave 0 queued after contract diff classified as breaking",
+            detail="Wave 1 queued after contract diff classified as breaking",
         ),
         AuditLog(
             job_id=jobs[0].job_id,
             old_status="queued",
             new_status="running",
             changed_at=jobs[0].created_at + timedelta(minutes=2),
-            detail="api-core Devin sync detected scoped billing fix and dispatched session",
+            detail="Devin session dispatched for billing adapter and usage field migration",
         ),
         AuditLog(
             job_id=jobs[0].job_id,
             old_status="running",
-            new_status="pr_opened",
-            changed_at=jobs[0].created_at + timedelta(minutes=24),
-            detail=f"Billing adapter and tests updated in {jobs[0].pr_url}",
+            new_status="awaiting_merge",
+            changed_at=jobs[0].created_at + timedelta(minutes=36),
+            detail=f"Billing PR opened — billing.total → total_usd rename and sla_tier addition: {jobs[0].pr_url}",
         ),
-        AuditLog(
-            job_id=jobs[0].job_id,
-            old_status="pr_opened",
-            new_status="green",
-            changed_at=jobs[0].created_at + timedelta(minutes=49),
-            detail="CI passed and finance reviewer approved the billing field migration",
-        ),
+        # dashboard-service: queued → running → awaiting_merge
         AuditLog(
             job_id=jobs[1].job_id,
             old_status=None,
             new_status="queued",
             changed_at=jobs[1].created_at,
-            detail="Wave 1 queued after billing patch entered review",
+            detail="Wave 2 queued — dashboard and billing can run in parallel",
         ),
         AuditLog(
             job_id=jobs[1].job_id,
@@ -587,48 +577,122 @@ async def seed_contract_change_demo(db: AsyncSession):
         AuditLog(
             job_id=jobs[1].job_id,
             old_status="running",
-            new_status="pr_opened",
-            changed_at=jobs[1].created_at + timedelta(minutes=21),
+            new_status="awaiting_merge",
+            changed_at=jobs[1].created_at + timedelta(minutes=35),
             detail=f"Dashboard PR opened with detail-view mapping fix: {jobs[1].pr_url}",
         ),
-        AuditLog(
-            job_id=jobs[1].job_id,
-            old_status="pr_opened",
-            new_status="green",
-            changed_at=jobs[1].created_at + timedelta(minutes=42),
-            detail="UI smoke tests passed and overview card totals matched billing summary",
-        ),
+        # notification-service: queued → running → awaiting_merge
         AuditLog(
             job_id=jobs[2].job_id,
             old_status=None,
             new_status="queued",
             changed_at=jobs[2].created_at,
-            detail="Wave 1 queued for notification-service after dashboard contract stabilized",
+            detail="Wave 1 queued — notification recovery digest uses session detail endpoint",
         ),
         AuditLog(
             job_id=jobs[2].job_id,
             old_status="queued",
             new_status="running",
             changed_at=jobs[2].created_at + timedelta(minutes=2),
-            detail="Recovery report renderer updated for usage.cache_read_tokens alias removal",
+            detail="Devin session dispatched for notification Slack digest field migration",
         ),
         AuditLog(
             job_id=jobs[2].job_id,
             old_status="running",
-            new_status="pr_opened",
-            changed_at=jobs[2].created_at + timedelta(minutes=16),
-            detail=f"Notification PR opened and previewed successfully: {jobs[2].pr_url}",
-        ),
-        AuditLog(
-            job_id=jobs[2].job_id,
-            old_status="pr_opened",
-            new_status="green",
-            changed_at=jobs[2].created_at + timedelta(minutes=33),
-            detail="Webhook replay and recovery report preview both passed",
+            new_status="awaiting_merge",
+            changed_at=jobs[2].created_at + timedelta(minutes=11),
+            detail=f"Notification PR opened — usage.cached_tokens fallback updated: {jobs[2].pr_url}",
         ),
     ]
 
     for entry in audit_entries:
         db.add(entry)
+
+    # --- Pre-Merge Blast Radius Simulation ---
+    simulations = [
+        ContractSimulation(
+            change_id=change.id,
+            service_name="billing-service",
+            risk_score=0.85,
+            risk_level="high",
+            breaking_issues_json=json.dumps([
+                {
+                    "diff_type": "field_renamed",
+                    "path": "/api/v1/sessions",
+                    "method": "GET",
+                    "field": "billing.total → billing.total_usd",
+                    "detail": "Invoice rollup and reconciliation jobs reference billing.total directly; rename will cause runtime KeyError in cost aggregation pipeline",
+                    "weight": 0.40,
+                },
+                {
+                    "diff_type": "field_added_required",
+                    "path": "/api/v1/sessions",
+                    "method": "POST",
+                    "field": "sla_tier",
+                    "detail": "Session creation payloads from billing backfill jobs do not include sla_tier; requests will be rejected with 422 until client is patched",
+                    "weight": 0.30,
+                },
+                {
+                    "diff_type": "field_renamed",
+                    "path": "/api/v1/sessions/{session_id}",
+                    "method": "GET",
+                    "field": "usage.cached_tokens → usage.cache_read_tokens",
+                    "detail": "Budget audit reports read usage.cached_tokens for cost attribution; rename breaks finance export CSV generation",
+                    "weight": 0.15,
+                },
+            ]),
+            fields_affected=3,
+            routes_affected=3,
+            created_at=now - timedelta(hours=2, minutes=8),
+        ),
+        ContractSimulation(
+            change_id=change.id,
+            service_name="dashboard-service",
+            risk_score=0.52,
+            risk_level="medium",
+            breaking_issues_json=json.dumps([
+                {
+                    "diff_type": "field_renamed",
+                    "path": "/api/v1/sessions/{session_id}",
+                    "method": "GET",
+                    "field": "usage.cached_tokens → usage.cache_read_tokens",
+                    "detail": "Session detail drill-down card renders usage.cached_tokens in the token breakdown widget; will show 'N/A' after rename",
+                    "weight": 0.30,
+                },
+                {
+                    "diff_type": "field_renamed",
+                    "path": "/api/v1/sessions",
+                    "method": "GET",
+                    "field": "billing.total → billing.total_usd",
+                    "detail": "Cost-by-team chart tooltip reads billing.total for the formatted display value; tooltip will render $0.00 for all rows",
+                    "weight": 0.22,
+                },
+            ]),
+            fields_affected=2,
+            routes_affected=2,
+            created_at=now - timedelta(hours=2, minutes=8),
+        ),
+        ContractSimulation(
+            change_id=change.id,
+            service_name="notification-service",
+            risk_score=0.18,
+            risk_level="safe",
+            breaking_issues_json=json.dumps([
+                {
+                    "diff_type": "field_renamed",
+                    "path": "/api/v1/sessions/{session_id}",
+                    "method": "GET",
+                    "field": "usage.cached_tokens → usage.cache_read_tokens",
+                    "detail": "Slack recovery digest includes a token summary but uses a fallback default when fields are missing; rename has low impact",
+                    "weight": 0.18,
+                },
+            ]),
+            fields_affected=1,
+            routes_affected=1,
+            created_at=now - timedelta(hours=2, minutes=8),
+        ),
+    ]
+    for sim in simulations:
+        db.add(sim)
 
     await db.commit()

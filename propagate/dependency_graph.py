@@ -101,6 +101,25 @@ class DependencyGraph:
         return sorted(affected)
 
 
+def risk_weighted_sort(
+    waves: List[List[str]],
+    risk_scores: Dict[str, float],
+) -> List[List[str]]:
+    """Reorder services within each wave so high-risk services come first.
+
+    Args:
+        waves: Topologically sorted waves from topological_sort()
+        risk_scores: Mapping of service name to risk score (0.0-1.0)
+
+    Returns:
+        Same wave structure with services sorted by risk score (descending)
+    """
+    return [
+        sorted(wave, key=lambda svc: risk_scores.get(svc, 0.0), reverse=True)
+        for wave in waves
+    ]
+
+
 def build_dependency_graph_from_service_map(
     service_map: "dict[str, ServiceInfo]",
 ) -> DependencyGraph:

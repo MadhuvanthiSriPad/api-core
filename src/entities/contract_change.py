@@ -26,3 +26,4 @@ class ContractChange(Base):
 
     impact_sets = relationship("ImpactSet", back_populates="change", lazy="selectin")
     remediation_jobs = relationship("RemediationJob", back_populates="change", lazy="selectin")
+    simulations = relationship("ContractSimulation", back_populates="change", lazy="selectin")

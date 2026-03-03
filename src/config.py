@@ -50,11 +50,17 @@ class Settings(BaseSettings):
     # Notification service
     notification_webhook_url: str = ""
 
+    # Demo mode — progressive pipeline reveal
+    demo_mode: bool = False
+    demo_speed: float = 1.0
+    demo_manual_mode: bool = False
+
     if _USES_PYDANTIC_SETTINGS:
-        model_config = {"env_prefix": "API_CORE_"}
+        model_config = {"env_prefix": "API_CORE_", "env_file": ".env"}
     else:
         class Config:
             env_prefix = "API_CORE_"
+            env_file = ".env"
 
 
 settings = Settings()

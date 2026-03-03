@@ -38,7 +38,15 @@ def _on_sync_task_done(task: asyncio.Task) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     sync_task: asyncio.Task | None = None
+    demo_task: asyncio.Task | None = None
     await init_db()
+
+    if settings.demo_mode and not settings.demo_manual_mode:
+        from src.progressive_seed import run_progressive_demo
+        demo_task = asyncio.create_task(
+            run_progressive_demo(speed_factor=settings.demo_speed)
+        )
+
     if settings.devin_sync_enabled and settings.devin_api_key:
         sync_task = asyncio.create_task(
             run_sync_loop(
@@ -51,6 +59,10 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        if demo_task is not None:
+            demo_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await demo_task
         if sync_task is not None:
             sync_task.cancel()
             with suppress(asyncio.CancelledError):

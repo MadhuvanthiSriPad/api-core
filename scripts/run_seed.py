@@ -1,25 +1,27 @@
 """Seed the database with realistic demo data.
 
 Usage:
-    python scripts/run_seed.py          # seed all data
-    python scripts/run_seed.py --reset  # drop and recreate tables first
+    python scripts/run_seed.py              # seed all data
+    python scripts/run_seed.py --reset      # drop and recreate tables first
+    python scripts/run_seed.py --reset --demo  # base data only (progressive mode)
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 from pathlib import Path
 
 # Ensure project root is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.database import async_session, init_db, engine, Base
-from src.seed import seed_data
-
 
 async def main(reset: bool = False) -> None:
+    from src.database import async_session, init_db, engine, Base
+    from src.seed import seed_data
+
     if reset:
         print("Dropping all tables...")
         async with engine.begin() as conn:
@@ -40,5 +42,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--reset", action="store_true", help="Drop and recreate tables before seeding"
     )
+    parser.add_argument(
+        "--demo", action="store_true",
+        help="Skip contract change seed — data will be drip-fed by progressive demo mode",
+    )
     args = parser.parse_args()
+
+    if args.demo:
+        os.environ["API_CORE_DEMO_MODE"] = "true"
+
     asyncio.run(main(reset=args.reset))

@@ -43,12 +43,12 @@ def _map_status(devin_status: str, pr_url: str | None) -> str:
         return JobStatus.RUNNING.value
     if status == "blocked":
         if pr_url:
-            return JobStatus.PR_OPENED.value
+            return JobStatus.AWAITING_MERGE.value
         return JobStatus.NEEDS_HUMAN.value
     if status in {"failed", "error", "cancelled"}:
         return JobStatus.NEEDS_HUMAN.value
     if status in {"stopped", "finished", "completed", "succeeded", "success"}:
-        return JobStatus.PR_OPENED.value if pr_url else JobStatus.GREEN.value
+        return JobStatus.AWAITING_MERGE.value if pr_url else JobStatus.MERGED.value
     return JobStatus.RUNNING.value
 
 
@@ -274,7 +274,7 @@ def _build_recovery_complete(
     all_jobs: list,
     service_map: dict,
 ) -> dict:
-    """Build a recovery_complete webhook payload from a fully-green change."""
+    """Build a recovery_complete webhook payload from a fully-merged change."""
     try:
         summary = json.loads(change.summary_json or "{}").get("summary", "")
     except Exception:
@@ -372,8 +372,8 @@ async def sync_devin_sessions(
     skipped = 0
     sessions: list[dict] = []
     change: ContractChange | None = None
-    # Collect jobs that transition to pr_opened for webhook notification.
-    pr_opened_events: list[dict] = []
+    # Collect jobs that transition to awaiting_merge for webhook notification.
+    awaiting_merge_events: list[dict] = []
 
     try:
         client = DevinClient()
@@ -502,7 +502,7 @@ async def sync_devin_sessions(
                     # (emitted after PR is created and CI is green).
                     if active_pr_url and notification_bundle:
                         event_payload = {
-                            "event_type": "pr_opened",
+                            "event_type": "awaiting_merge",
                             "change_id": change.id,
                             "job_id": job.job_id,
                             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -518,7 +518,7 @@ async def sync_devin_sessions(
                             "devin_context": devin_context,
                             "notification_bundle": notification_bundle,
                         }
-                        pr_opened_events.append(event_payload)
+                        awaiting_merge_events.append(event_payload)
                 else:
                     # Update only when values changed to avoid unnecessary writes/locks.
                     old_status = job.status
@@ -549,7 +549,7 @@ async def sync_devin_sessions(
                     # Fire on first bundle appearance regardless of status transition.
                     if active_pr_url and notification_bundle:
                         event_payload = {
-                            "event_type": "pr_opened",
+                            "event_type": "awaiting_merge",
                             "change_id": change.id if change else 0,
                             "job_id": job.job_id or 0,
                             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -565,13 +565,13 @@ async def sync_devin_sessions(
                             "devin_context": devin_context,
                             "notification_bundle": notification_bundle,
                         }
-                        pr_opened_events.append(event_payload)
+                        awaiting_merge_events.append(event_payload)
 
             await db.commit()
 
         # Fire notification webhooks after commit (fire-and-forget).
-        for evt in pr_opened_events:
-            await emit_webhook("/api/v1/webhooks/pr-opened", evt)
+        for evt in awaiting_merge_events:
+            await emit_webhook("/api/v1/webhooks/awaiting-merge", evt)
 
         # If all jobs for this change are now green, fire recovery_complete.
         # notification-service deduplicates via idempotency key so safe to fire on every sync.
@@ -580,7 +580,7 @@ async def sync_devin_sessions(
                 select(RemediationJob).where(RemediationJob.change_id == change.id)
             )
             all_jobs = all_jobs_result.scalars().all()
-            if all_jobs and all(j.status == JobStatus.GREEN.value for j in all_jobs):
+            if all_jobs and all(j.status == JobStatus.MERGED.value for j in all_jobs):
                 rc_payload = _build_recovery_complete(change, list(all_jobs), service_map)
                 await emit_webhook("/api/v1/webhooks/recovery-complete", rc_payload)
 
