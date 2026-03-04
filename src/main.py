@@ -71,7 +71,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="API Core",
+    title=settings.app_name,
     description="Tracks AI sessions, token usage, costs, and contract management",
     version=settings.api_version,
     lifespan=lifespan,
@@ -96,4 +96,4 @@ app.include_router(invoices.router, prefix=settings.api_prefix)
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "service": "api-core", "version": settings.api_version}
+    return {"status": "healthy", "service": settings.service_name, "version": settings.api_version}

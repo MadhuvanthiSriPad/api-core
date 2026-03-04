@@ -18,6 +18,9 @@ except ModuleNotFoundError:
 
 
 class Settings(BaseSettings):
+    app_name: str = "API Core"
+    service_name: str = "api-core"
+    source_repo: str = "api-core"
     # For production, use: postgresql+asyncpg://user:pass@host:5432/api_core
     database_url: str = "sqlite+aiosqlite:///./api_core.db"
     api_prefix: str = "/api/v1"

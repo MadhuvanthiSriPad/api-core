@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 from pydantic import BaseModel, Field
 
+from src.config import settings
+
 
 class ContractCurrentResponse(BaseModel):
     version_hash: str
@@ -66,7 +68,7 @@ class ContractChangeResponse(BaseModel):
     affected_services: int = 0
     impacted_services: list[str] = Field(default_factory=list)
     target_repos: list[str] = Field(default_factory=list)
-    source_repo: str = "api-core"
+    source_repo: str = settings.source_repo
     active_jobs: int = 0
     pr_count: int = 0
     remediation_status: str = "pending"

@@ -281,7 +281,7 @@ async def list_changes(
             affected_services=len(unique_services_list),
             impacted_services=unique_services_list,
             target_repos=target_repos,
-            source_repo="api-core",
+            source_repo=settings.source_repo,
             active_jobs=active_jobs,
             pr_count=pr_count,
             remediation_status=rem_status,

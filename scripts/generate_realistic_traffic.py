@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import time
 import urllib.error
@@ -22,8 +23,8 @@ import urllib.request
 from datetime import datetime, timezone
 
 
-BASE_URL = "http://127.0.0.1:8001"
-API_KEY = "demo-api-key"
+BASE_URL = os.environ.get("API_CORE_BASE_URL", "http://127.0.0.1:8001")
+API_KEY = os.environ.get("API_CORE_API_KEY", "demo-api-key")
 REAL_CALLERS = ("billing-service", "dashboard-service", "notification-service")
 MODELS = ("devin-default", "devin-fast", "devin-reasoning", "claude-3-5-sonnet")
 AGENTS = (
@@ -153,11 +154,18 @@ def _exercise_read_paths(session_ids: list[str], loops: int) -> None:
 
 
 def main() -> None:
+    global BASE_URL, API_KEY
+
     parser = argparse.ArgumentParser(description="Generate realistic local API traffic")
     parser.add_argument("--sessions", type=int, default=36, help="number of new sessions to create")
     parser.add_argument("--reads", type=int, default=80, help="number of read-traffic loops")
     parser.add_argument("--sleep-ms", type=int, default=30, help="small pause between write flows")
+    parser.add_argument("--base-url", default=BASE_URL, help="api-core base URL")
+    parser.add_argument("--api-key", default=API_KEY, help="api-core API key")
     args = parser.parse_args()
+
+    BASE_URL = args.base_url.rstrip("/")
+    API_KEY = args.api_key
 
     teams = _request("GET", "/api/v1/teams", caller="billing-service")
     if not isinstance(teams, list) or not teams:

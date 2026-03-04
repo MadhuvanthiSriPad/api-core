@@ -293,11 +293,33 @@ class TestContractDemoControls:
             assert running.json()["advanced_stage"] == "running"
             assert running.json()["next_stage"] == "billing_pr"
 
-            detail = await client.get(f"/api/v1/contracts/changes/{running.json()['change_id']}")
+            billing_pr = await client.post("/api/v1/contracts/demo/advance")
+            assert billing_pr.status_code == 200
+            assert billing_pr.json()["advanced_stage"] == "billing_pr"
+            assert billing_pr.json()["next_stage"] == "dashboard_pr"
+
+            dashboard_pr = await client.post("/api/v1/contracts/demo/advance")
+            assert dashboard_pr.status_code == 200
+            assert dashboard_pr.json()["advanced_stage"] == "dashboard_pr"
+            assert dashboard_pr.json()["next_stage"] == "notification_pr"
+
+            notification_pr = await client.post("/api/v1/contracts/demo/advance")
+            assert notification_pr.status_code == 200
+            assert notification_pr.json()["advanced_stage"] == "notification_pr"
+            assert notification_pr.json()["next_stage"] == "notify"
+
+            notify = await client.post("/api/v1/contracts/demo/advance")
+            assert notify.status_code == 200
+            assert notify.json()["advanced_stage"] == "notify"
+            assert notify.json()["current_stage"] == "notify"
+            assert notify.json()["next_stage"] is None
+            assert notify.json()["is_complete"] is True
+
+            detail = await client.get(f"/api/v1/contracts/changes/{notify.json()['change_id']}")
             assert detail.status_code == 200
             jobs = detail.json()["remediation_jobs"]
             assert len(jobs) == 3
-            assert {job["status"] for job in jobs} == {"running"}
+            assert {job["status"] for job in jobs} == {"awaiting_merge"}
 
     @pytest.mark.asyncio
     async def test_demo_reset_clears_contract_recovery_records(self, client):

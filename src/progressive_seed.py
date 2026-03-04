@@ -3,7 +3,7 @@
 When the server starts with API_CORE_DEMO_MODE=true, this module progressively
 inserts contract-change data so the dashboard pipeline advances step-by-step:
 
-  detect → analyze → plan → dispatch → fix (queued → running → PRs) → notify
+  detect → analyze → plan → dispatch → fix → notify
 
 No frontend changes needed — the 10-second poll picks up each stage automatically.
 """
@@ -76,14 +76,10 @@ DEMO_STAGES = [
     {"key": "billing_pr", "label": "Open billing-service PR"},
     {"key": "dashboard_pr", "label": "Open dashboard-service PR"},
     {"key": "notification_pr", "label": "Open notification-service PR"},
+    {"key": "notify", "label": "Send stakeholder notifications"},
 ]
 
 _STAGE_INDEX = {stage["key"]: index for index, stage in enumerate(DEMO_STAGES)}
-_PR_STAGE_BY_REPO = {
-    "billing-service": "billing_pr",
-    "dashboard-service": "dashboard_pr",
-    "notification-service": "notification_pr",
-}
 _PR_STAGE_ORDER = [
     ("billing-service", "billing_pr"),
     ("dashboard-service", "dashboard_pr"),
@@ -363,6 +359,28 @@ def _has_pr_stage(job: RemediationJob) -> bool:
     }
 
 
+async def _stage_notify(change_id: int) -> None:
+    """Record the final stakeholder-notification handoff."""
+    async with async_session() as db:
+        now = datetime.now(timezone.utc)
+        result = await db.execute(
+            select(RemediationJob).where(RemediationJob.change_id == change_id)
+        )
+        jobs = list(result.scalars().all())
+
+        for job in jobs:
+            db.add(AuditLog(
+                job_id=job.job_id,
+                old_status=job.status,
+                new_status="notification_sent",
+                changed_at=now,
+                detail="Stakeholder notifications sent to Slack and Jira for review handoff",
+            ))
+
+        await db.commit()
+        logger.info("Stage NOTIFY: stakeholder notifications recorded")
+
+
 def _build_demo_status_payload(
     *,
     change_id: int | None,
@@ -468,10 +486,28 @@ async def get_progressive_demo_status() -> dict:
                 )
             last_completed = stage_key
 
+        job_ids = [job.job_id for job in jobs]
+        if job_ids:
+            audit_result = await db.execute(
+                select(AuditLog).where(AuditLog.job_id.in_(job_ids))
+            )
+            for entry in audit_result.scalars().all():
+                detail_text = (entry.detail or "").lower()
+                status_text = (entry.new_status or "").lower()
+                if (
+                    status_text == "notification_sent"
+                    or "stakeholder notifications sent" in detail_text
+                ):
+                    return _build_demo_status_payload(
+                        change_id=change_id,
+                        current_stage="notify",
+                        next_stage=None,
+                    )
+
         return _build_demo_status_payload(
             change_id=change_id,
             current_stage=last_completed,
-            next_stage=None,
+            next_stage="notify",
         )
 
 
@@ -499,6 +535,8 @@ async def advance_progressive_demo() -> dict:
         await _stage_dispatch(change_id)
     elif next_stage == "running":
         await _stage_running(change_id)
+    elif next_stage == "notify":
+        await _stage_notify(change_id)
     else:
         repo_name = next(
             repo for repo, stage_key in _PR_STAGE_ORDER if stage_key == next_stage
@@ -569,7 +607,7 @@ async def run_progressive_demo(speed_factor: float = 1.0) -> None:
     await _stage_running(change_id)
     await wait(5)
 
-    # Stage 5: PRs open one-by-one (wave order)
+    # Stage 5: PRs open one-by-one
     logger.info("Progressive demo: ── Stage 5a — billing-service PR ──")
     await _stage_pr(change_id, "billing-service")
     await wait(5)
@@ -580,5 +618,10 @@ async def run_progressive_demo(speed_factor: float = 1.0) -> None:
 
     logger.info("Progressive demo: ── Stage 5c — notification-service PR ──")
     await _stage_pr(change_id, "notification-service")
+    await wait(5)
 
-    logger.info("Progressive demo: ✓ pipeline complete — all PRs awaiting merge")
+    # Stage 6: Notify
+    logger.info("Progressive demo: ── Stage 6 — NOTIFY ──")
+    await _stage_notify(change_id)
+
+    logger.info("Progressive demo: ✓ pipeline complete — stakeholder notifications sent")
