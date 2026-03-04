@@ -268,7 +268,8 @@ class TestContractDemoControls:
         with patch("src.progressive_seed.async_session", TestSession):
             resp = await client.get("/api/v1/contracts/demo/status")
             assert resp.status_code == 200
-            assert resp.json()["next_stage"] == "detect"
+            assert resp.json()["demo_available"] is False
+            assert resp.json()["next_stage"] is None
 
             detect = await client.post("/api/v1/contracts/demo/advance")
             assert detect.status_code == 200
@@ -328,7 +329,8 @@ class TestContractDemoControls:
 
             reset = await client.post("/api/v1/contracts/demo/reset")
             assert reset.status_code == 200
-            assert reset.json()["next_stage"] == "detect"
+            assert reset.json()["demo_available"] is False
+            assert reset.json()["next_stage"] is None
             assert reset.json()["change_id"] is None
 
             resp = await client.get("/api/v1/contracts/changes")

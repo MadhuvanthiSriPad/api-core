@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import delete, select
 
+from src.config import settings
 from src.database import async_session
 from src.entities.audit_log import AuditLog
 from src.entities.contract_change import ContractChange
@@ -85,6 +86,7 @@ _PR_STAGE_ORDER = [
     ("dashboard-service", "dashboard_pr"),
     ("notification-service", "notification_pr"),
 ]
+_DEMO_REF_PREFIX = "accr_"
 
 
 # ── Stage functions ──────────────────────────────────────────────────────────
@@ -386,11 +388,12 @@ def _build_demo_status_payload(
     change_id: int | None,
     current_stage: str | None,
     next_stage: str | None,
+    available: bool = True,
 ) -> dict:
     completed_steps = 0
-    if next_stage is None:
+    if available and next_stage is None:
         completed_steps = len(DEMO_STAGES)
-    elif next_stage in _STAGE_INDEX:
+    elif available and next_stage in _STAGE_INDEX:
         completed_steps = _STAGE_INDEX[next_stage]
 
     return {
@@ -401,7 +404,9 @@ def _build_demo_status_payload(
         "next_label": _stage_label(next_stage),
         "completed_steps": completed_steps,
         "total_steps": len(DEMO_STAGES),
-        "is_complete": next_stage is None,
+        "is_complete": available and next_stage is None,
+        "demo_available": available,
+        "demo_enabled": settings.demo_mode,
     }
 
 
@@ -410,11 +415,22 @@ async def get_progressive_demo_status() -> dict:
     async with async_session() as db:
         change_result = await db.execute(
             select(ContractChange)
+            .where(
+                ContractChange.base_ref.like(f"{_DEMO_REF_PREFIX}%"),
+                ContractChange.head_ref.like(f"{_DEMO_REF_PREFIX}%"),
+            )
             .order_by(ContractChange.created_at.desc(), ContractChange.id.desc())
             .limit(1)
         )
         change = change_result.scalars().first()
         if not change:
+            if not settings.demo_mode:
+                return _build_demo_status_payload(
+                    change_id=None,
+                    current_stage=None,
+                    next_stage=None,
+                    available=False,
+                )
             return _build_demo_status_payload(
                 change_id=None,
                 current_stage=None,
@@ -515,6 +531,8 @@ async def advance_progressive_demo() -> dict:
     """Advance the demo by one stage and return the updated status."""
     status = await get_progressive_demo_status()
     next_stage = status["next_stage"]
+    if next_stage is None and not status.get("demo_available"):
+        next_stage = "detect"
     change_id = status["change_id"]
 
     if next_stage is None:

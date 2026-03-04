@@ -1,6 +1,6 @@
 # API Core
 
-`api-core` is the main backend in this demo system. It stores session data, tracks usage and cost, exposes contract-change APIs, and kicks off the remediation workflow when an OpenAPI contract changes.
+`api-core` is the main backend in this system. It stores session data, tracks usage and cost, exposes contract-change APIs, and kicks off the remediation workflow when an OpenAPI contract changes.
 
 ## What It Handles
 

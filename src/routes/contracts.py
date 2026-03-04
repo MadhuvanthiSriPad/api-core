@@ -60,8 +60,6 @@ _JOB_STATUS_PRIORITY = {
     "needs_human": 1,
     "ci_failed": 0,
 }
-
-
 @router.get("/demo/status")
 async def demo_status():
     """Expose the current step-by-step demo progression state."""
@@ -597,10 +595,10 @@ async def get_guardrails():
 @router.get("/sync-status")
 async def get_sync_status():
     """Return the current Devin sync configuration status."""
-    from src.config import settings
-
     return {
         "devin_sync_enabled": settings.devin_sync_enabled,
         "interval_seconds": settings.devin_sync_interval_seconds,
         "devin_api_configured": bool(settings.devin_api_key),
+        "devin_read_refresh_enabled": settings.devin_read_refresh_enabled,
+        "devin_read_refresh_seconds": settings.devin_read_refresh_seconds,
     }
