@@ -227,7 +227,7 @@ class TestSyncDevin:
                 assert "request.body.max_cost_usd" in latest_change.summary_json
 
     @pytest.mark.asyncio
-    async def test_pr_opened_webhook_includes_notification_bundle(self):
+    async def test_awaiting_merge_webhook_includes_notification_bundle(self):
         mock_client = AsyncMock()
         mock_client.list_sessions.return_value = [{"session_id": "devin_notify"}]
         mock_client.get_session.return_value = {
@@ -271,7 +271,8 @@ class TestSyncDevin:
 
         mock_emit.assert_awaited_once()
         path_arg, payload_arg = mock_emit.await_args.args
-        assert path_arg == "/api/v1/webhooks/pr-opened"
+        assert path_arg == "/api/v1/webhooks/awaiting-merge"
+        assert payload_arg["event_type"] == "awaiting_merge"
         assert payload_arg["notification_bundle"]["author"] == "devin"
         assert payload_arg["notification_bundle"]["jira"]["summary"] == "Devin-authored Jira summary"
         assert payload_arg["notification_bundle"]["assertions"]["target_repo"].endswith("/billing-service")

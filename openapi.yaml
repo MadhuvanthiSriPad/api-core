@@ -599,6 +599,70 @@ paths:
         "404":
           description: No simulation results found
 
+  /api/v1/contracts/changes/{change_id}/simulation/verify:
+    post:
+      operationId: verifyHighRiskSimulations
+      summary: Dispatch Devin verification for high-risk simulated services
+      tags:
+        - contracts
+      parameters:
+        - name: change_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Verification sessions dispatched
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifyResponse"
+        "404":
+          description: No high-risk simulations found
+
+  /api/v1/contracts/demo/status:
+    get:
+      operationId: getProgressiveDemoStatus
+      summary: Return the current manual seed/demo progression state
+      tags:
+        - contracts
+      responses:
+        "200":
+          description: Manual seed/demo progression status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DemoStatusResponse"
+
+  /api/v1/contracts/demo/advance:
+    post:
+      operationId: advanceProgressiveDemo
+      summary: Seed or advance the manual contract recovery progression by one stage
+      tags:
+        - contracts
+      responses:
+        "200":
+          description: Updated manual seed/demo progression status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DemoStatusResponse"
+
+  /api/v1/contracts/demo/reset:
+    post:
+      operationId: resetProgressiveDemo
+      summary: Clear manual seed/demo contract recovery records
+      tags:
+        - contracts
+      responses:
+        "200":
+          description: Manual seed/demo data cleared
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DemoStatusResponse"
+
   /api/v1/contracts/service-graph:
     get:
       operationId: getServiceGraph
@@ -1204,6 +1268,48 @@ components:
           type: integer
         devin_api_configured:
           type: boolean
+        devin_read_refresh_enabled:
+          type: boolean
+        devin_read_refresh_seconds:
+          type: integer
+
+    DemoStatusResponse:
+      type: object
+      properties:
+        change_id:
+          type: integer
+          nullable: true
+        current_stage:
+          type: string
+          nullable: true
+        current_label:
+          type: string
+          nullable: true
+        next_stage:
+          type: string
+          nullable: true
+        next_label:
+          type: string
+          nullable: true
+        completed_steps:
+          type: integer
+        total_steps:
+          type: integer
+        is_complete:
+          type: boolean
+        demo_available:
+          type: boolean
+        demo_enabled:
+          type: boolean
+        advanced_stage:
+          type: string
+          nullable: true
+        advanced_label:
+          type: string
+          nullable: true
+        message:
+          type: string
+          nullable: true
 
     ContractChangeResponse:
       type: object
@@ -1449,3 +1555,27 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/SimulationResultResponse"
+
+    VerifySessionResponse:
+      type: object
+      properties:
+        service_name:
+          type: string
+        devin_analysis_id:
+          type: string
+          nullable: true
+        error:
+          type: string
+          nullable: true
+
+    VerifyResponse:
+      type: object
+      properties:
+        change_id:
+          type: integer
+        dispatched:
+          type: integer
+        sessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/VerifySessionResponse"
